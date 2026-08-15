@@ -1,0 +1,19 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #1a1a1a;
+  overflow: hidden;
+}
+#wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+}
+#screen {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: #5C94FC;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+}
