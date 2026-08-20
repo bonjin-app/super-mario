@@ -4174,18 +4174,26 @@ function updateMario() {
 }
 
 /* ---------- fx ---------- */
+const isGone = p => p.gone;
+const bumpExpired = b => b.t >= BUMP_OFFSET.length;
 function updateFx() {
   for (const p of GAME.particles) {
     p.t++;
     p.x += p.vx; p.y += p.vy;
-    if (p.kind === 'debris') p.vy += 0.3;
-    if (p.kind === 'spark') p.vy += 0.1;
-    if (p.kind === 'dust') p.vy -= 0.02;
-    if (p.t > (p.kind === 'dust' ? 14 : 60)) p.gone = true;
+    if (p.kind === 'debris') { p.vy += 0.35; p.vx *= 0.98; p.rot = (p.rot || 0) + 0.25; }
+    else if (p.kind === 'spark') { p.vy += 0.12; p.vx *= 0.96; }
+    else if (p.kind === 'dust') { p.vy -= 0.02; p.vx *= 0.95; }
+    else if (p.kind === 'trail') { p.vx *= 0.9; }
+    const life = p.kind === 'dust' ? 14 : (p.kind === 'trail' ? 12 : 60);
+    if (p.t > life) p.gone = true;
   }
-  GAME.particles = GAME.particles.filter(p => !p.gone);
+  compact(GAME.particles, isGone);
   for (const p of GAME.popups) { p.t++; p.y -= 0.6; if (p.t > 50) p.gone = true; }
-  GAME.popups = GAME.popups.filter(p => !p.gone);
+  compact(GAME.popups, isGone);
+  if (GAME.bumps.length) {
+    for (const b of GAME.bumps) b.t++;
+    compact(GAME.bumps, bumpExpired);
+  }
   if (GAME.shake > 0) GAME.shake--;
 }
 function updateTimer() {
@@ -4193,7 +4201,16 @@ function updateTimer() {
   GAME.timeF++;
   if (GAME.timeF >= 36) {
     GAME.timeF = 0; GAME.time--;
-    if (GAME.time <= 0) { GAME.time = 0; killMario(true); }
+    if (GAME.time === 100 && !GAME.warnedTime) { GAME.warnedTime = true; Sound.hurry(); }
+    if (GAME.time <= 0) {
+      /* Running out used to kill the player with no explanation at all: the hero
+         simply died mid-stride and the death card looked identical to a stomp.
+         The clock gets its own cue and its own line on the card. */
+      GAME.time = 0; GAME.timeUp = true;
+      hint('TIME UP!');
+      Sound.timeUp();
+      killMario(true);
+    }
   }
 }
 
@@ -4202,221 +4219,758 @@ function updateClear() {
   const m = GAME.mario, L = GAME.level;
   if (GAME.flagSlide) {
     m.y += 1;
-    if (m.y >= 13*TILE - m.h - 2) { m.y = 13*TILE - m.h - 2; GAME.flagSlide = false; Sound.pipe(); }
+    m.state = 'stand';
+    // the banner tracks the slide, so the descent has something to read against
+    const top = 3 * TILE, bottom = 12 * TILE;
+    GAME.bannerY = Math.max(0, Math.min(bottom - top, m.y - top));
+    if (m.y >= 13*TILE - m.h - 2) {
+      m.y = 13*TILE - m.h - 2; GAME.flagSlide = false;
+      GAME.bannerY = bottom - top;
+      Sound.pipe();
+    }
   } else if (!GAME.walkDone) {
     m.x += 1.2; m.facing = 1; m.animT += 1.2;
-    if (m.x >= (L.castleX + 1) * TILE) GAME.walkDone = true;
+    m.state = WALK_CYCLE[Math.floor(m.animT / 7) % WALK_CYCLE.length];
+    if (m.x >= (L.castleX + 1) * TILE) {
+      GAME.walkDone = true; BGM.stop();
+      // the third course of a world gets the longer flourish
+      GAME.worldDone = false;      // the world ends at the fortress, not here
+      Sound.fanfare();
+    }
   } else {
+    if (GAME.castleFlagY < 14) GAME.castleFlagY += 0.35;   // hoist the keep banner
+    // classic time bonus: remaining seconds convert to score before the wipe
     GAME.clearTimer++;
-    if (GAME.clearTimer > 150) nextLevel();
+    if (GAME.time > 0) {
+      const step = Math.min(GAME.time, 3);
+      GAME.time -= step; GAME.score += step * 50;
+      if (GAME.clearTimer % 2 === 0) Sound.tone(1319, 0.05, 'square', 0.07);
+    } else if (GAME.clearTimer > (GAME.worldDone ? 260 : 120)) nextLevel();
   }
 }
 
 /* ---------- rendering ---------- */
-function camQ() { return Math.round(GAME.camera * 2) / 2; }
-function drawBackground() {
-  ctx.fillStyle = '#5C94FC'; ctx.fillRect(0, 0, 256, 240);
-  const cam = camQ();
-  for (const d of (GAME.level && GAME.level.decos) || []) {
-    const px = (d.type === 'cloud') ? 0.5 : 1; // parallax
-    const x = d.x - cam * px + (d.type === 'cloud' ? Math.sin((GAME.frame + d.x) * 0.004) * 3 : 0);
-    if (x < -80 || x > 340) continue;
-    if (d.type === 'cloud') ctx.drawImage(SPR.cloud, x, d.y);
-    else if (d.type === 'hill') ctx.drawImage(SPR.hill, x, d.y);
-    else if (d.type === 'bush') ctx.drawImage(SPR.bush, x, d.y);
+function lerp(a, b, t) { return a + (b - a) * t; }
+function viewCam() { return lerp(GAME.camPrev, GAME.camera, GAME.alpha); }
+/* Interpolated draw position for anything that records px/py. Interpolating only
+   the camera and the player was worse than interpolating nothing: everything else
+   still stepped at 60Hz, so enemies and items visibly juddered against a camera
+   that was now moving every display frame. Either the whole scene interpolates or
+   none of it does. Entities spawned mid-step have no previous position yet, so
+   they fall back to their current one for that first frame. */
+function ix(e) { return e.px === undefined ? e.x : lerp(e.px, e.x, GAME.alpha); }
+function iy(e) { return e.py === undefined ? e.y : lerp(e.py, e.y, GAME.alpha); }
+function camQ() { return Math.round(viewCam() * 2) / 2; }
+/* gradients are immutable once built; making them per frame was pure waste */
+function drawSky(th) {
+  if (!th._grad) {
+    const g = ctx.createLinearGradient(0, 0, 0, LOGICAL_H);
+    g.addColorStop(0, th.sky[0]);
+    g.addColorStop(0.55, th.sky[1]);
+    g.addColorStop(1, th.sky[2]);
+    th._grad = g;
   }
+  ctx.fillStyle = th._grad; ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+}
+let hudScrim = null;
+function hudScrimGrad() {
+  if (!hudScrim) {
+    hudScrim = ctx.createLinearGradient(0, 2, 0, 30);
+    hudScrim.addColorStop(0, 'rgba(4,10,26,0.34)');
+    hudScrim.addColorStop(1, 'rgba(4,10,26,0)');
+  }
+  return hudScrim;
+}
+/* star field for the night theme: positions come from a hash of the index, so
+   they are stable frame to frame but not visibly gridded */
+function drawStars(cam) {
+  for (let i = 0; i < 70; i++) {
+    const h = (i * 2654435761) % 100003;
+    const wx = (h % 4096);
+    const x = wx - (cam * 0.12) % 4096;
+    const span = LOGICAL_W + 64;
+    const sx = ((x % span) + span) % span - 32;
+    if (sx < 0 || sx > LOGICAL_W) continue;
+    const y = 6 + (Math.floor(h / 4096) % 150);
+    const tw = (GAME.frame + i * 13) % 140;
+    ctx.globalAlpha = tw < 10 ? 0.35 : (i % 5 === 0 ? 0.95 : 0.65);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(Math.round(sx), y, 1, 1);
+    if (i % 9 === 0) ctx.fillRect(Math.round(sx) + 1, y, 1, 1);
+  }
+  ctx.globalAlpha = 1;
+}
+function drawBackground() {
+  const T = theme(), th = T.theme;
+  drawSky(th);
+  const cam = camQ();
+  const L = GAME.level;
+  if (th.stars) drawStars(cam);
+  /* An interior gets a wall instead of a sky. Drawn at a slight parallax so it reads
+     as being behind the playfield rather than painted onto it. */
+  if (L.fortress) {
+    const pc = cam * 0.5;
+    const x0 = Math.floor(pc / TILE) - 1;
+    for (let ty = 0; ty < 15; ty++) {
+      for (let i = 0; i <= VIEW_TILES; i++) {
+        const tx = x0 + i;
+        const v = (tx * 7 + ty * 3) % 5 < 2 ? 1 : 0;
+        ctx.drawImage(T.wall[v], Math.round(tx * TILE - pc), ty * TILE);
+      }
+    }
+  }
+  if (!L) return;
+  // decos are pre-sorted back to front and each carries its own parallax factor
+  for (const d of L.decos) {
+    const x = d.x - cam * d.px + (d.drift ? Math.sin((GAME.frame + d.x) * 0.004) * 2 : 0);
+    if (x < -40 || x > LOGICAL_W + 8) continue;
+    ctx.drawImage(T[d.spr], Math.round(x), d.y);
+  }
+}
+/* coin spin: hold the face-on frame, pass through the edge-on one quickly */
+const COIN_CYCLE = [0, 0, 0, 1, 2, 3];
+/* a punched block hops up and settles: BUMP_OFFSET[t] is its y offset in px */
+const BUMP_OFFSET = [-1, -3, -5, -6, -6, -5, -3, -2, -1, 0];
+function bumpAt(tx, ty) {
+  for (const b of GAME.bumps) if (b.tx === tx && b.ty === ty) return BUMP_OFFSET[b.t] || 0;
+  return 0;
 }
 function drawTiles() {
   const L = GAME.level;
+  const T = theme();
   const cam = camQ();
   const x0 = Math.floor((cam - 8) / TILE);
+  // A coin spends most of a real spin facing you. Cycling 0-1-2-3 evenly left it
+  // edge-on half the time, which read as a gold stick rather than a coin.
+  const coinFrame = COIN_CYCLE[Math.floor(GAME.frame / 5) % COIN_CYCLE.length];
   for (let ty = 0; ty < L.H; ty++) {
-    for (let tx = x0; tx <= x0 + 18; tx++) {
+    for (let tx = x0; tx <= x0 + VIEW_TILES; tx++) {
       const c = cellAt(tx, ty);
-      const x = tx * TILE - cam, y = ty * TILE;
-      if (c === 'X') ctx.drawImage(SPR.ground, x, y);
-      else if (c === 'B') ctx.drawImage(SPR.brick, x, y);
-      else if (c === '?' || c === 'M' || c === 'F' || c === 'S') ctx.drawImage(SPR.qblock, x, y);
-      else if (c === 'U') ctx.drawImage(SPR.used, x, y);
-      else if (c === 'T') ctx.drawImage(SPR.pipeTop, x, y);
-      else if (c === 'P') ctx.drawImage(SPR.pipeBody, x, y);
-      else if (c === 'f') ctx.drawImage(SPR.pole, x, y);
-      else if (c === 'b') ctx.drawImage(SPR.flagBall, x + 2, y + 4);
+      if (c === ' ') continue;
+      const x = tx * TILE - cam, y = ty * TILE + (GAME.bumps.length ? bumpAt(tx, ty) : 0);
+      // capped tile only where the top is actually exposed; buried tiles use the
+      // flat interior so a mass reads as one structure
+      if (c === 'X') ctx.drawImage(solid(cellAt(tx, ty - 1)) ? T.groundFill : T.ground, x, y);
+      else if (c === 'B') ctx.drawImage(T.brick, x, y);
+      else if (c === '?' || c === 'M' || c === 'F' || c === 'S') ctx.drawImage(T.qblock, x, y);
+      else if (c === 'U') ctx.drawImage(T.used, x, y);
+      else if (c === 'T') ctx.drawImage(T.pipeTop, x, y);
+      else if (c === 'E') ctx.drawImage(cellAt(tx - 1, ty) === 'E' ? T.pipeEnterR : T.pipeEnterL, x, y);
+      else if (c === 'L') ctx.drawImage(T.lava[Math.floor(GAME.frame / 12) % 2], x, y);
+      else if (c === 'A') ctx.drawImage(SPR.axe, x, y);
+      else if (c === 'P') ctx.drawImage(T.pipeBody, x, y);
+      else if (c === 'f') ctx.drawImage(T.pole, x, y);
+      else if (c === 'b') blitFoe(SPR.finial, x + 4, y + 5);
+      // loose coins spin in sync: a per-tile phase offset made a row read as a
+      // row of mismatched bars rather than a line of coins
+      else if (c === 'c') blitFoe(SPR.coin[coinFrame], x + 3, y + 4);
     }
   }
+  /* Fire bars and the boss. Bars are drawn from the pivot outward so the chain reads
+     as one object; the boss is drawn here rather than with the enemies because it is
+     the only thing in the game taller than two tiles. */
+  if (L.bars) {
+    for (const b of L.bars) {
+      const px = b.x - cam;
+      if (px < -80 || px > LOGICAL_W + 80) continue;
+      for (let i = 1; i <= b.len; i++) {
+        const lx = Math.round(px + Math.cos(b.a) * i * 8) - 4;
+        const ly = Math.round(b.y + Math.sin(b.a) * i * 8) - 4;
+        blitFoe(SPR.fireLink, lx, ly);
+      }
+    }
+  }
+  if (L.boss && !L.boss.dead) {
+    const b = L.boss, px = Math.round(b.x - cam);
+    if (px > -48 && px < LOGICAL_W + 48) {
+      const spr = SPR.boss[Math.floor(GAME.frame / 10) % 2];
+      const flip = b.vx > 0;
+      if (flip) {
+        ctx.save(); ctx.translate(px + spr.lw, Math.round(b.y)); ctx.scale(-1, 1);
+        ctx.imageSmoothingEnabled = true; ctx.drawImage(spr, 0, 0, spr.lw, spr.lh);
+        ctx.imageSmoothingEnabled = false; ctx.restore();
+      } else {
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(spr, px, Math.round(b.y), spr.lw, spr.lh);
+        ctx.imageSmoothingEnabled = false;
+      }
+      // a struck boss flashes: the shot landed, it just did not matter
+      if (b.hit > 0 && b.hit % 2) {
+        ctx.globalAlpha = 0.45;
+        ctx.fillStyle = '#FFD86A';
+        ctx.fillRect(px + 2, Math.round(b.y) + 2, spr.lw - 4, spr.lh - 4);
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+  /* Lifts ride with the terrain, and interpolate like every other moving thing --
+     a platform stepping at 60Hz under a smoothly interpolated hero reads as the
+     hero sliding on ice. */
+  if (L.plats) {
+    for (const p of L.plats) {
+      const x = Math.round(ix(p) - cam), y = Math.round(iy(p));
+      if (x < -40 || x > LOGICAL_W + 40) continue;
+      ctx.drawImage(p.w <= 16 ? T.platS : T.plat, x, y);
+      // a short shadow line under the deck so it reads as floating, not painted on
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.fillRect(x + 2, y + p.h, p.w - 4, 1);
+    }
+  }
+  /* Checkpoint marker, drawn with the terrain so the hero passes in front. The
+     pennant climbs the pole over 40 frames when armed -- an instant swap read as
+     a glitch at 60Hz, and the climb is the same visual grammar as the goal. */
+  if (L.checkX) {
+    const px = L.checkX * TILE + 2 - cam;
+    if (px > -20 && px < LOGICAL_W + 20) {
+      const top = 13 * TILE - 44;
+      ctx.fillStyle = 'rgba(22,18,34,0.92)'; ctx.fillRect(px, top, 2, 44);
+      ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fillRect(px, top, 1, 44);
+      ctx.fillStyle = '#2A3352'; ctx.fillRect(px - 2, 13 * TILE - 3, 6, 3);
+      if (GAME.checkArmed) {
+        const t = Math.min(1, GAME.checkT / 40);
+        const y = Math.round(top + 26 - 26 * t);
+        blitFoe(SPR.checkFlag, px + 2, y);
+      } else {
+        // furled at the foot of the pole: arming *raises* it, so the resting
+        // state has to be the bottom or the climb reads as a teleport
+        blitFoe(SPR.checkLimp, px + 2, top + 25);
+      }
+    }
+  }
+  /* Course banner rides the pole down with the player; castle banner is hoisted
+     once the hero is inside. Both are drawn with the terrain so the hero sprite
+     passes in front of the pole. */
+  const poleX = L.flagX * TILE - cam;
+  if (poleX > -32 && poleX < LOGICAL_W + 32) {
+    blitFoe(SPR.banner, poleX - 7, 3 * TILE + 6 + GAME.bannerY);
+  }
   const cx = L.castleX * TILE - cam;
-  if (cx > -64 && cx < 340) ctx.drawImage(SPR.castle, cx, 13*TILE - 32);
+  if (cx > -64 && cx < LOGICAL_W + 64) {
+    ctx.drawImage(SPR.castle, cx, 13*TILE - 32);
+    if (GAME.castleFlagY > 0) {
+      ctx.fillStyle = 'rgba(24,16,30,0.9)';
+      ctx.fillRect(cx + 15, 13*TILE - 46, 1, 14);
+      blitFoe(SPR.castleFlag, cx + 16, 13*TILE - 46 + (14 - GAME.castleFlagY));
+    }
+  }
 }
-function drawPlayerSprite(spr, x, y, w, h, sq) {
-  const sx = 1 + (1 - sq) * 0.6;
-  const sw = spr.width * sx, sh = spr.height * sq;
-  ctx.drawImage(spr, x + (w - sw) / 2 - 1, y + h - sh, sw, sh);
+/* Monsters are curve art on supersampled canvases too, so they need the logical
+   footprint and smoothing for the blit. `visibleH` clips from the top, which is
+   how the pipe plant appears to rise out of its pipe. */
+function blitFoe(spr, x, y, visibleH) {
+  const lw = spr.lw || spr.width, lh = spr.lh || spr.height;
+  const h = visibleH === undefined ? lh : Math.min(lh, visibleH);
+  if (h <= 0) return;
+  const smooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(spr, 0, 0, spr.width, h * FOE_SS, x, y, lw, h);
+  ctx.imageSmoothingEnabled = smooth;
+}
+/* squash/stretch: sq<1 flattens and widens, sq>1 stretches and narrows.
+   Anchored to the feet and centred on the hitbox. `flip` mirrors in place, into
+   the exact same destination rect, so a left-facing draw lands on identical
+   pixels to a pre-mirrored sprite. */
+function drawPlayerSprite(spr, x, y, w, h, sq, flip) {
+  /* Hero canvases are supersampled, so the destination has to come from their
+     logical footprint, not their pixel size. Smoothing is enabled just for this
+     blit: the heroes are drawn from curves and must stay smooth, while every
+     tile and enemy keeps nearest-neighbour sampling. */
+  const lw = spr.lw || spr.width, lh = spr.lh || spr.height;
+  const sw = lw * (1 + (1 - sq) * 0.6), sh = lh * sq;
+  const dx = x + (w - sw) / 2, dy = y + h - sh;
+  const smooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = true;
+  if (flip) {
+    ctx.save();
+    ctx.translate(dx + sw, dy);
+    ctx.scale(-1, 1);
+    ctx.drawImage(spr, 0, 0, sw, sh);
+    ctx.restore();
+  } else {
+    ctx.drawImage(spr, dx, dy, sw, sh);
+  }
+  ctx.imageSmoothingEnabled = smooth;
 }
 function drawSprites() {
-  const m = GAME.mario, cam = GAME.camera; // subpixel: no rounding
-  const sprSet = CHAR_SPR[GAME.charIdx];
+  const m = GAME.mario, cam = viewCam(); // subpixel: no rounding
   for (const it of GAME.items) {
-    const x = it.x - cam, y = it.y;
-    if (x < -24 || x > 280) continue;
-    if (it.type === 'coinAnim') { if (it.t % 8 < 4) ctx.drawImage(SPR.coin, x + 2, y); }
-    else if (it.type === 'mushroom') ctx.drawImage(SPR.mushroom, x, y);
-    else if (it.type === 'flower') ctx.drawImage(SPR.flower, x, y);
-    else if (it.type === 'star') ctx.drawImage(SPR.star, x, y);
+    const x = ix(it) - cam, y = iy(it);
+    if (x < -24 || x > LOGICAL_W + DRAW_MARGIN) continue;
+    if (it.type === 'coinAnim') { blitFoe(SPR.coin[Math.floor(it.t / 3) % 4], x + 2, y); }
+    else if (it.type === 'mushroom') blitFoe(SPR.mushroom, x, y);
+    else if (it.type === 'flower') blitFoe(SPR.flower, x, y);
+    else if (it.type === 'star') blitFoe(SPR.star, x, y);
   }
   for (const b of GAME.balls) {
-    const x = b.x - cam, y = b.y;
-    const a = b.spin % 8 < 4;
-    ctx.fillStyle = a ? '#FF7A20' : '#E7551F'; ctx.fillRect(x, y, 8, 8);
-    ctx.fillStyle = a ? '#FFD84A' : '#FFFFFF'; ctx.fillRect(x + 2, y + 2, 4, 4);
+    // spin direction follows travel direction
+    const f = b.vx > 0 ? Math.floor(b.spin / 3) % 4 : 3 - Math.floor(b.spin / 3) % 4;
+    ctx.drawImage(SPR.fireball[f], ix(b) - cam, iy(b));
   }
   for (const e of GAME.level.enemies) {
     if (e.gone) continue;
-    const x = e.x - cam, y = e.y + (e.type === 'puff' && !e.flat ? (e.t % 30 < 15 ? 0 : 1) : 0);
-    if (x < -24 || x > 280) continue;
-    if (e.flat) { ctx.drawImage(e.type === 'puff' ? SPR.puffFlat : SPR.shell, x, y + (e.type === 'puff' ? 4 : 6)); continue; }
-    if (e.type === 'puff') ctx.drawImage(SPR.puff, x, y);
-    else if (e.type === 'shelly') ctx.drawImage(SPR.shelly, x, y);
-    else if (e.type === 'shell' || e.type === 'shellMove') ctx.drawImage(SPR.shell, x, y);
+    const x = ix(e) - cam, y = iy(e);
+    if (x < -24 || x > LOGICAL_W + DRAW_MARGIN) continue;
+    // walk cycle driven by distance travelled, so it matches the actual speed
+    const step = Math.floor(Math.abs(e.x) / 6) % 2;
+    if (e.flat) {
+      // squashed pose for walkers, shell for the rest
+      const usePuff = e.type === 'puff' || e.type === 'spiko' || e.type === 'flappy' || e.type === 'chomp';
+      blitFoe(usePuff ? SPR.puffFlat : SPR.shell, x, y + (usePuff ? 0 : 6));
+      continue;
+    }
+    if (e.type === 'puff') blitFoe(SPR.puff[step], x, y);
+    else if (e.type === 'spiko') blitFoe(SPR.spiko[step], x, y);
+    else if (e.type === 'flappy') blitFoe(SPR.flappy[e.vy < -0.5 ? 1 : 0], x, y);
+    else if (e.type === 'blaze') {
+      if (e.up) blitFoe(SPR.blaze[Math.floor(GAME.frame / 5) % 2], x, y);
+    }
+    else if (e.type === 'glider') {
+      blitFoe(SPR.glider[Math.floor(GAME.frame / 6) % 2], x, y);
+    }
+    else if (e.type === 'fish') {
+      blitFoe(SPR.fish[Math.floor(GAME.frame / 7) % 2], x, y);
+    }
+    else if (e.type === 'cannon') {
+      blitFoe(SPR.cannon, x, y);
+    }
+    else if (e.type === 'bolt') {
+      blitFoe(SPR.bolt[Math.floor(GAME.frame / 8) % 2], x, y);
+    }
+    else if (e.type === 'chomp') {
+      // clip to the pipe mouth so it looks like it is coming out of the pipe
+      const visible = Math.max(0, e.baseY + e.h - iy(e));
+      if (visible > 0) blitFoe(SPR.chomp, x, y, visible);
+    }
+    else if (e.type === 'shelly') blitFoe(SPR.shelly[step], x, y);
+    else if (e.type === 'shell' || e.type === 'shellMove') blitFoe(SPR.shell, x, y);
   }
   for (const p of GAME.particles) {
-    const x = p.x - cam, y = p.y;
+    const x = ix(p) - cam, y = iy(p);
     if (p.kind === 'debris') {
-      ctx.save(); ctx.beginPath(); ctx.rect(x-1, y-1, 9, 9); ctx.clip();
-      ctx.drawImage(SPR.brick, x - 1, y - 1); ctx.restore();
+      ctx.save();
+      ctx.translate(x + 2, y + 2);
+      ctx.rotate(p.rot || 0);
+      ctx.globalAlpha = Math.max(0, 1 - p.t / 60);
+      ctx.drawImage(theme().brick, -2, -2, 5, 5);
+      ctx.restore();
     } else if (p.kind === 'spark') {
-      ctx.globalAlpha = Math.max(0, 1 - p.t / 20);
-      ctx.fillStyle = '#FFD84A'; ctx.fillRect(x, y, 2, 2);
+      const tw = p.t % 6 < 3;
+      ctx.globalAlpha = Math.max(0, 1 - p.t / 24);
+      ctx.fillStyle = tw ? '#FFD84A' : '#FFFFFF';
+      const s = tw ? 2 : 3;
+      ctx.fillRect(x - (s >> 1), y - (s >> 1), s, s);
       ctx.globalAlpha = 1;
     } else if (p.kind === 'dust') {
       ctx.globalAlpha = Math.max(0, 0.7 * (1 - p.t / 14));
       ctx.fillStyle = '#E8E0D0'; ctx.fillRect(x, y, 2, 2);
       ctx.globalAlpha = 1;
+    } else if (p.kind === 'trail') {
+      ctx.globalAlpha = Math.max(0, 0.8 * (1 - p.t / 12));
+      ctx.fillStyle = p.color || '#FFD84A';
+      const s = Math.max(1, 3 - (p.t >> 2));
+      ctx.fillRect(x, y, s, s);
+      ctx.globalAlpha = 1;
     }
   }
-  if (m) {
-    const x = m.x - cam - 1, y = m.y;
-    let spr, sprL;
-    if (m.star > 0) {
-      spr = [SPR.star, SPR.flower, SPR.mushroom][Math.floor(GAME.frame / 4) % 3];
-    } else if (m.big) {
-      spr = m.state === 'jump' ? sprSet.bigJump : sprSet.bigIdle;
-      sprL = m.state === 'jump' ? sprSet.bigJumpL : sprSet.bigIdleL;
-    } else {
-      spr = m.state === 'jump' ? sprSet.smallJump : sprSet.smallIdle;
-      sprL = m.state === 'jump' ? sprSet.smallJumpL : sprSet.smallIdleL;
-    }
-    const blink = m.invuln > 0 && GAME.frame % 4 < 2;
+  // once the walk finishes the hero is inside the keep, so stop drawing them:
+  // leaving them parked in the open gateway undercut the whole arrival
+  if (m && !(GAME.state === 'clear' && GAME.walkDone)) {
+    const x = lerp(m.px, m.x, GAME.alpha) - cam, y = lerp(m.py, m.y, GAME.alpha);
+    // star palette cycles at 4 frames, then speeds up to 2 over the last second
+    // as the only warning that invincibility is about to run out
+    // 4x slower under reduced motion; the end-of-star speed-up is kept, just gentler
+    const starRate = REDUCED ? (m.star > 60 ? 16 : 8) : (m.star > 60 ? 4 : 2);
+    const set = m.star > 0 ? STAR_SPR[Math.floor(GAME.frame / starRate) % STAR_SPR.length]
+              : (m.fire ? FIRE_SPR[GAME.charIdx] : CHAR_SPR[GAME.charIdx]);
+    const f = set[m.state] || set.stand;
+    const spr = m.big ? f.big : f.small;
+    const flip = m.facing === -1;
     if (m.dead) {
-      if (m.deathTimer % 10 < 5) ctx.drawImage(spr, x, y);
-    } else if (blink) {
-      // invincibility blink (hidden)
-    } else if (m.facing === -1) {
-      ctx.drawImage(sprL, x, y);
+      if (m.deathTimer % 10 < 5) drawPlayerSprite(spr, x, y, m.w, m.h, 1, m.facing === -1);
+    } else if (m.invuln > 0 && GAME.frame % 4 < 2) {
+      // invincibility blink: skip this frame
     } else {
-      drawPlayerSprite(spr, x, y, m.w, m.h, m.sq);
+      drawPlayerSprite(spr, x, y, m.w, m.h, m.sq, flip);
+    }
+  }
+  /* The hero is drawn after the terrain, so a descent would show them sliding down
+     the front of the pipe. Redrawing the two mouth tiles over them puts the hero
+     behind the pipe for the length of the transition. */
+  if (GAME.pipeAnim) {
+    const a = GAME.pipeAnim, T = theme(), tcam = camQ();  // tcam: the tiles' own camera
+    const tx = a.dir === 'in' ? (a.entry ? a.entry.tx : -1)
+                              : (GAME.level.room ? GAME.level.exitTx : -1);
+    const ty = a.dir === 'in' ? (a.entry ? a.entry.ty : -1) : 11;
+    if (tx >= 0) for (let i = 0; i < 2; i++) {
+      const c = cellAt(tx + i, ty);
+      const spr = c === 'E' ? (i === 1 ? T.pipeEnterR : T.pipeEnterL) : (c === 'T' ? T.pipeTop : null);
+      if (spr) ctx.drawImage(spr, Math.round((tx + i) * TILE - tcam), ty * TILE);
     }
   }
   for (const p of GAME.popups) {
     const alpha = p.t > 30 ? Math.max(0, 1 - (p.t - 30) / 20) : 1;
-    drawText(p.text, p.x - cam, p.y, '#FFF', alpha);
+    // round to whole pixels: 1px font glyphs look broken at subpixel positions
+    drawText(p.text, Math.round(ix(p) - cam), Math.round(iy(p)), '#FFF', alpha, true);
   }
 }
 function drawHud() {
-  const nm = CHARS[GAME.charIdx].name;
-  drawText(nm, 8, 8, '#FFF');
-  drawText(String(GAME.score).padStart(6, '0'), 8, 16, '#FFF');
-  drawText('COINS', 96, 8, '#FFF');
-  ctx.drawImage(SPR.coin, 132, 12);
-  drawText(String(GAME.coins).padStart(2, '0'), 148, 16, '#FFF');
-  drawText('WORLD', 156, 8, '#FFF');
-  drawText(GAME.world + '-' + GAME.lv, 156, 16, '#FFF');
-  drawText('TIME', 220, 8, '#FFF');
-  drawText(String(GAME.time).padStart(3, '0'), 220, 16, '#FFF');
-  drawText('LIVES', 8, 226, '#FFF');
-  drawText(String(GAME.lives).padStart(2, '0'), 46, 226, '#FFF');
+  // progress bar hugs the very top edge so it never crosses the readouts
+  if (GAME.level && GAME.mario && !GAME.mario.dead && !GAME.level.room) {
+    const prog = Math.max(0, Math.min(1, (GAME.mario.x - 3 * TILE) / ((GAME.level.flagX - 3) * TILE)));
+    ctx.fillStyle = 'rgba(0,0,0,0.30)'; ctx.fillRect(0, 0, LOGICAL_W, 2);
+    ctx.fillStyle = '#FFD84A'; ctx.fillRect(0, 0, Math.round(LOGICAL_W * prog), 2);
+    // where the respawn point sits, so the bar answers "how much would I lose?"
+    if (GAME.level.checkX) {
+      const at = Math.round(LOGICAL_W * (GAME.level.checkX - 3) / (GAME.level.flagX - 3));
+      ctx.fillStyle = GAME.checkArmed ? '#4AC8FF' : 'rgba(255,255,255,0.45)';
+      ctx.fillRect(at, 0, 2, 2);
+    }
+  }
+  // soft scrim: white text on bright sky is otherwise low contrast
+  ctx.fillStyle = hudScrimGrad(); ctx.fillRect(0, 2, LOGICAL_W, 28);
+
+  /* Five groups, each CENTRED inside its own fifth of the view. The previous
+     layout stepped from a fixed left margin, which bunched everything toward the
+     left and left a wide empty gap on the right. */
+  const R1 = 6, R2 = 15;
+  const mid = i => (i + 0.5) * LOGICAL_W / 5;
+  const cen = (str, i, y, color, vol) =>
+    drawText(str, Math.round(mid(i) - textWidth(str) / 2), y, color, 1, true, vol);
+
+  cen(CHARS[GAME.charIdx].name, 0, R1, '#FFF');
+  cen(String(GAME.score).padStart(6, '0'), 0, R2, '#FFF', true);
+
+  const coinStr = 'X' + String(GAME.coins).padStart(2, '0');
+  const coinGroup = 10 + 2 + textWidth(coinStr);        // icon + gap + text
+  const coinX = Math.round(mid(1) - coinGroup / 2);
+  blitFoe(SPR.coin[Math.floor(GAME.frame / 8) % 4], coinX, R1 - 1);
+  drawText(coinStr, coinX + 12, R1, '#FFD84A', 1, true, true);
+  cen('COINS', 1, R2, '#9FB6E8');
+
+  cen('LIVES', 2, R1, '#FFF');
+  cen('X' + GAME.lives, 2, R2, '#FFF', true);
+
+  cen('WORLD', 3, R1, '#FFF');
+  cen(GAME.world + '-' + GAME.lv, 3, R2, '#FFF', true);
+
+  cen('TIME', 4, R1, '#FFF');
+  const timeLow = GAME.time <= 100 && (GAME.frame % 36 < 18);
+  cen(String(GAME.time).padStart(3, '0'), 4, R2, timeLow ? '#FF6A6A' : '#FFF', true);
+
+  // combo feedback (pulses while chain stomping)
+  if (GAME.combo >= 2 && GAME.state === 'play') {
+    const txt = 'COMBO X' + GAME.combo;
+    const pulse = 1 + Math.sin(GAME.frame * 0.3) * 0.08;
+    ctx.save();
+    ctx.translate(LOGICAL_W / 2, 40);
+    ctx.scale(pulse, pulse);
+    drawText(txt, -textWidth(txt) / 2, 0, '#FFD84A', 1, true);
+    ctx.restore();
+  }
+}
+function centerText(s, y, color, alpha) {
+  drawText(s, Math.round((LOGICAL_W - textWidth(s)) / 2), y, color, alpha, true);
 }
 function drawTitle() {
-  ctx.fillStyle = '#5C94FC'; ctx.fillRect(0, 0, 256, 240);
-  // parallax clouds on title too
-  const t = GAME.frame * 0.15;
-  for (let i = 0; i < 4; i++) {
-    const x = ((i * 80 + t) % 320) - 40;
-    ctx.drawImage(SPR.cloud, x, 20 + (i % 2) * 18);
+  const T = TSPR[0]; // the title always shows the meadow theme
+  drawSky(THEMES[0]);
+
+  // clouds ride above the logo plate; scenery sits below the hero row. Nothing
+  // in this screen is allowed to share a y-range with a line of text.
+  const t = GAME.frame * 0.12;
+  for (let i = 0; i < 5; i++) {
+    const x = ((i * 72 + t) % (LOGICAL_W + 80)) - 40;
+    ctx.drawImage(i % 2 ? T.cloud : T.cloudBig, Math.round(x), 6 + (i % 3) * 5);
   }
-  ctx.fillStyle = '#43B025';
-  ctx.beginPath(); ctx.moveTo(0, 208); ctx.lineTo(60, 148); ctx.lineTo(120, 208); ctx.fill();
-  for (let y = 208; y < 240; y += 8) for (let x = 0; x < 256; x += 16) {
-    ctx.fillStyle = ((x / 16) + (y / 8)) % 2 ? '#C85A17' : '#B5561A';
-    ctx.fillRect(x, y, 16, 8);
+  ctx.drawImage(T.hillBig, 12, 194);
+  ctx.drawImage(T.hill, 206, 198);
+  for (let y = 208; y < LOGICAL_H; y += 16) for (let x = 0; x < LOGICAL_W; x += 16) {
+    // same rule as in-game: only the top course is capped
+    ctx.drawImage(y > 208 ? T.groundFill : T.ground, x, y);
   }
-  ctx.drawImage(SPR.bush, 20, 188);
-  ctx.drawImage(SPR.bush, 204, 188);
-  // logo
-  ctx.fillStyle = '#2BA8A0'; ctx.fillRect(28, 36, 200, 52);
-  ctx.fillStyle = '#1E7A74'; ctx.fillRect(28, 80, 200, 8);
-  drawText('PIPO JUMP!', 70, 48, '#FFF');
-  drawText('©2026 PIXEL STUDIO', 72, 74, '#EAF6F2');
-  // character select
-  drawText('CHOOSE YOUR HERO', 84, 100, '#FFF');
+  ctx.drawImage(T.bushBig, 56, 201);
+  ctx.drawImage(T.bush, 176, 202);
+
+  /* Logo. The bob is a whole-pixel sine so the letterforms never land on a
+     half pixel, which would soften the outline for a frame at a time. */
+  const logoBob = Math.round(Math.sin(GAME.frame * 0.035) * 2);
+  bigHeadline('PIPO JUMP', 24 + logoBob, 4, HEAD_GOLD);
+  centerText('©2026 PIXEL STUDIO', 66 + logoBob, '#BFEDE8');
+
+  centerText('CHOOSE YOUR HERO', 86, '#FFFFFF');
+  ctx.imageSmoothingEnabled = true; // hero previews are curve art
   const bob = Math.floor(GAME.frame / 20) % 2;
   CHARS.forEach((c, i) => {
-    const x = 62 + i * 46;
-    const y = 116 + (i === GAME.charIdx ? 0 : bob);
-    const s = CHAR_SPR[i].smallIdle;
-    if (i === GAME.charIdx) {
-      ctx.drawImage(s, x - 7, y - 10, s.width * 2, s.height * 2); // 2x showcase
-      ctx.fillStyle = '#FFD84A';
-      ctx.beginPath(); ctx.moveTo(x, 98); ctx.lineTo(x - 4, 92); ctx.lineTo(x + 4, 92); ctx.fill();
-      drawText(c.name, x - 11, 162, '#FFD84A');
+    const cx = Math.round(LOGICAL_W / 2 + (i - 1) * 74);
+    const sel = i === GAME.charIdx;
+    const s = CHAR_SPR[i].stand.small;
+    if (sel) {
+      ctx.fillStyle = 'rgba(255,216,74,0.18)'; ctx.fillRect(cx - 24, 98, 48, 68);
+      ctx.fillStyle = '#FFD84A'; ctx.fillRect(cx - 24, 98, 48, 1); ctx.fillRect(cx - 24, 165, 48, 1);
+      ctx.drawImage(s, cx - 14, 104 + bob, s.lw * 2, s.lh * 2); // 2x showcase
     } else {
-      ctx.globalAlpha = 0.75;
-      ctx.drawImage(s, x - 7, y - 2);
+      ctx.globalAlpha = 0.7;
+      ctx.drawImage(s, cx - 7, 120 + bob, s.lw, s.lh); // feet aligned with the 2x sprite
       ctx.globalAlpha = 1;
-      drawText(c.name, x - 13, 134, '#DDE8FF');
     }
+    drawText(c.name, cx - Math.round(textWidth(c.name) / 2), 140, sel ? '#FFD84A' : '#CFE0FF', 1, true);
+    /* Each hero carries a two-word blurb (CAP BOY, TWIN TAIL, CAT HOOD) that was in
+       the data from the start and had never been drawn anywhere. It only shows for the
+       selected one -- three at once is noise, one is a caption. */
+    if (sel) drawText(c.blurb, cx - Math.round(textWidth(c.blurb) / 2), 148, '#BFEDE8', 1, true);
+    // per-hero stat bars make the speed/jump difference legible at a glance
+    [[c.speed, '#6BD048', 156], [c.jump, '#4AC8FF', 161]].forEach(([val, col, y]) => {
+      const filled = Math.max(1, Math.min(5, Math.round((val - 0.88) / 0.06)));
+      for (let k = 0; k < 5; k++) {
+        ctx.fillStyle = k < filled ? col : 'rgba(255,255,255,0.22)';
+        ctx.fillRect(cx - 13 + k * 6, y, 4, 3);
+      }
+    });
   });
-  // stats hint
-  drawText('SPEED/JUMP VARY BY HERO', 64, 174, '#BFD4FF');
-  drawText('TOP: ' + String(GAME.high).padStart(6, '0'), 84, 188, '#FFD84A');
-  if (Math.floor(Date.now() / 500) % 2 === 0) drawText('PRESS ENTER', 84, 204, '#FFF');
-  drawText('ARROWS:SELECT M:SOUND B:MUSIC F:FIRE', 30, 226, '#DDE8FF');
+  ctx.imageSmoothingEnabled = false;
+  // legend for the two stat bars
+  const lgx = Math.round(LOGICAL_W / 2) - 58;
+  ctx.fillStyle = '#6BD048'; ctx.fillRect(lgx, 174, 4, 3);
+  drawText('SPEED', lgx + 8, 172, '#CFE0FF', 1, true);
+  ctx.fillStyle = '#4AC8FF'; ctx.fillRect(lgx + 60, 174, 4, 3);
+  drawText('JUMP', lgx + 68, 172, '#CFE0FF', 1, true);
+  centerText(TOUCH ? 'TAP A TO START' : 'PRESS ENTER TO START', 189,
+    REDUCED ? '#FFD84A' : (Math.floor(GAME.frame / 24) % 2 ? '#FFFFFF' : '#FFD84A'));
+
+  /* Footer band. At 0.78 the brick coursing still showed through and the score sat in
+     the texture; 0.9 plus a rule along the top reads as a panel rather than a wash. */
+  ctx.fillStyle = 'rgba(6,10,26,0.90)'; ctx.fillRect(0, 206, LOGICAL_W, 34);
+  ctx.fillStyle = 'rgba(255,216,74,0.55)'; ctx.fillRect(0, 206, LOGICAL_W, 1);
+  /* The record gets its context when the table agrees with it. An install that
+     predates the table has a `pipoHigh` and no rows, and inventing a world and a hero
+     for it would be a lie printed in gold. */
+  const rec = GAME.scores[0];
+  centerText('TOP ' + String(GAME.high).padStart(6, '0') +
+             (rec && rec.s === GAME.high ? '   W' + rec.w + '-' + rec.lv + '  ' + rec.hero : ''),
+             211, '#FFD84A');
+  /* Only once there is something to choose. On a first visit the line would be a
+     control with one option, which is just noise. */
+  if (GAME.maxWorld > 1) {
+    centerText('START AT WORLD ' + GAME.startWorld + (TOUCH ? '  TAP DOWN' : '  DOWN TO CHANGE'), 220, '#DDE8FF');
+  }
+  /* On a desktop page the key legend already lives in the DOM chrome, so
+     repeating it inside the playfield is pure duplication. On touch the chrome is
+     hidden and this is the only reference, so it stays there. */
+  if (TOUCH) {
+    centerText('A JUMP   HOLD B TO RUN   F SHOOT', 224, '#DDE8FF');
+    centerText('P PAUSE FOR FULL CONTROLS', 233, '#9FB6E8');
+  } else {
+    centerText('P PAUSE FOR FULL CONTROLS', 228, '#9FB6E8');
+  }
 }
 function drawWorld() {
-  const shx = GAME.shake > 0 ? (Math.random() - 0.5) * 2 : 0;
+  /* Decaying alternating offset, not per-frame noise: random jitter reads as a
+     dropped frame, a vertical thump reads as an impact. Whole pixels only, so
+     the tile grid never lands on a half pixel. */
+  let shy = 0;
+  if (GAME.shake > 0) shy = (GAME.shake % 2 ? 1 : -1) * Math.min(2, Math.ceil(GAME.shake / 2));
   ctx.save();
-  ctx.translate(shx, 0);
+  ctx.translate(0, shy);
   drawBackground();
   drawTiles();
   drawSprites();
   ctx.restore();
   drawHud();
 }
+function scrim(a) { ctx.fillStyle = `rgba(6,10,24,${a})`; ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H); }
+
+/* hero portrait + remaining lives, measured and centred as a single group */
+function drawLifeCounter(y) {
+  const spr = CHAR_SPR[GAME.charIdx].stand.small;
+  const txt = 'X ' + GAME.lives;
+  const gap = 6;
+  const total = spr.lw + gap + textWidth(txt);
+  const x = Math.round((LOGICAL_W - total) / 2);
+  const smooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(spr, x, y - 2, spr.lw, spr.lh);
+  ctx.imageSmoothingEnabled = smooth;
+  drawText(txt, x + spr.lw + gap, y + 5, '#FFFFFF', 1, true, true);
+}
+
+/* One-off teaching banners. Nothing on screen used to say which key runs or how
+   to use the flower, so both powers went unnoticed. Each hint fires once per run
+   and phrases itself for whichever input the player is actually using. */
+function hint(text) { GAME.hint = text; GAME.hintT = 170; }
+function drawHint() {
+  if (!GAME.hint || GAME.hintT <= 0) return;
+  const a = GAME.hintT > 140 ? (170 - GAME.hintT) / 30 : Math.min(1, GAME.hintT / 40);
+  const w = textWidth(GAME.hint) + 12;
+  ctx.globalAlpha = Math.max(0, Math.min(1, a));
+  ctx.fillStyle = 'rgba(8,14,32,0.82)';
+  ctx.fillRect((LOGICAL_W - w) / 2, 52, w, 15);
+  ctx.fillStyle = '#FFD84A';
+  ctx.fillRect((LOGICAL_W - w) / 2, 52, w, 1);
+  ctx.globalAlpha = 1;
+  centerText(GAME.hint, 56, '#FFFFFF', Math.max(0, Math.min(1, a)));
+}
+
+/* The controls list lives on the pause screen: it is the one place a player
+   already goes looking for answers, and it needs no extra key to discover. */
+/* Built from KEYS_MAP so the table is the truth after a rebind rather than a copy of
+   the defaults that quietly goes stale. */
+const CONTROL_ROWS = () => TOUCH ? [
+  ['MOVE', 'ARROWS'], ['JUMP', 'A  HOLD FOR HEIGHT'], ['RUN', 'HOLD B'],
+  ['SHOOT', 'F  AFTER FLOWER'], ['PIPE', 'DOWN'], ['PAUSE', 'P']
+] : [
+  ['MOVE', bindingText('left') + '  ' + bindingText('right')],
+  ['JUMP', bindingText('jump') + '  HOLD FOR HEIGHT'],
+  ['RUN', 'HOLD ' + bindingText('run')],
+  ['SHOOT', bindingText('fire') + '  AFTER FLOWER'],
+  ['PIPE', bindingText('down')],
+  ['PAUSE', bindingText('pause')],
+  ['SOUND', bindingText('mute') + ' MUTE  ' + bindingText('bgm') + ' MUSIC']
+];
+/* The top five, as a block centred as one group rather than five centred lines --
+   five independently centred rows of different lengths read as a ransom note. Columns
+   are fixed so the scores line up under each other, which is the only reason a table
+   beats a list. `mine` is the row this run just took, if it took one. */
+function drawScoreTable(topY, mine) {
+  const x0 = Math.round(LOGICAL_W / 2) - 78;
+  centerText('TOP FIVE', topY, '#FFD84A');
+  const list = GAME.scores;
+  if (!list.length) {
+    centerText('NO RUNS YET', topY + 14, '#8C9BC4');
+    return;
+  }
+  list.forEach((e, i) => {
+    const y = topY + 14 + i * 10;
+    const on = i === mine;
+    if (on) {
+      ctx.fillStyle = 'rgba(255,216,74,0.16)';
+      ctx.fillRect(x0 - 6, y - 2, 168, 10);
+    }
+    const col = on ? '#FFD84A' : (i === 0 ? '#FFFFFF' : '#9FB6E8');
+    drawText(String(i + 1), x0, y, on ? '#FFD84A' : '#8C9BC4', 1, true);
+    drawText(String(e.s).padStart(6, '0'), x0 + 16, y, col, 1, true);
+    drawText('W' + e.w + '-' + e.lv, x0 + 66, y, col, 1, true);
+    drawText(e.hero || '-', x0 + 104, y, col, 1, true);
+  });
+}
+function drawControls(topY) {
+  const rows = CONTROL_ROWS();
+  centerText('CONTROLS', topY, '#FFD84A');
+  const kx = Math.round(LOGICAL_W / 2) - 118;
+  rows.forEach(([k, v], i) => {
+    const y = topY + 14 + i * 11;
+    drawText(k, kx, y, '#9FB6E8', 1, true);
+    drawText(v, kx + 44, y, '#FFFFFF', 1, true);
+  });
+}
 function draw() {
   switch (GAME.state) {
     case 'title': drawTitle(); break;
     case 'gameover':
-      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 256, 240);
-      drawText('GAME OVER', 84, 96, '#FFF');
-      drawText('SCORE ' + GAME.score, 84, 116, '#FFF');
-      if (Math.floor(Date.now() / 500) % 2 === 0) drawText('PRESS ENTER', 84, 148, '#FFF');
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+      bigHeadline('GAME OVER', 34, 3, HEAD_RED);
+      /* What the run was. The score alone says nothing about how it was earned, and a
+         player who took 84 coins the careful way and one who chained foes end to end
+         used to get the identical card. */
+      centerText('REACHED WORLD ' + GAME.world + '-' + GAME.lv, 70, '#9FB6E8');
+      centerText(GAME.run.coins + ' COINS   ' + GAME.run.foes + ' FOES   BEST CHAIN ' + GAME.run.chain,
+                 80, '#DDE8FF');
+      centerText('SCORE ' + String(GAME.score).padStart(6, '0'), 94, '#FFFFFF');
+      if (GAME.scoreAt === 0 && (REDUCED || Math.floor(GAME.frame / 20) % 2 === 0))
+        centerText('NEW RECORD', 106, '#6BD048');
+      drawScoreTable(120, GAME.scoreAt);
+      /* A run used to end at a dead end: one key sent you to the title and the
+         world you had reached was gone. Continuing restarts the world you died in
+         with a fresh set of lives -- the score resets, so the leaderboard still
+         means one clean run. */
+      const opts = [['CONTINUE  WORLD ' + GAME.world + '-1', 190], ['END  BACK TO TITLE', 206]];
+      opts.forEach(([label, y], i) => {
+        const sel = GAME.overSel === i;
+        const w = textWidth(label);
+        const x = Math.round((LOGICAL_W - w) / 2);
+        if (sel) {
+          ctx.fillStyle = 'rgba(255,216,74,0.16)';
+          ctx.fillRect(x - 10, y - 3, w + 20, 12);
+          drawText('>', x - 9, y, '#FFD84A', 1, true);
+        }
+        drawText(label, x, y, sel ? '#FFD84A' : '#8C9BC4', 1, true);
+      });
+      if (REDUCED || Math.floor(GAME.frame / 26) % 2 === 0)
+        centerText(TOUCH ? 'ARROWS TO PICK - A TO CONFIRM' : 'ARROWS TO PICK - ENTER TO CONFIRM', 224, '#DDE8FF');
       break;
     case 'ready':
-      drawWorld();
-      drawText(GAME.world + '-' + GAME.lv, 104, 96, '#FFF');
-      drawText('READY!', 104, 112, '#FFF');
+      /* Losing a life used to cut straight back into the course with no
+         acknowledgement at all, so there was nowhere the player could see how
+         many they had left. A death now gets the classic interstitial -- hero
+         portrait and the remaining count -- while a fresh course keeps the
+         lighter READY! card over the level. */
+      if (GAME.afterDeath) {
+        ctx.fillStyle = '#000'; ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+        centerText(GAME.timeUp ? 'TIME UP!' : 'WORLD ' + GAME.world + '-' + GAME.lv, 84,
+                   GAME.timeUp ? '#FF6A6A' : '#FFFFFF');
+        if (GAME.timeUp) centerText('WORLD ' + GAME.world + '-' + GAME.lv, 96, '#9FB6E8');
+        drawLifeCounter(GAME.timeUp ? 118 : 112);
+        /* Say where the course will resume. A silent checkpoint is the same as no
+           checkpoint: the player braces for the whole course again and only finds
+           out afterwards. Blue matches the pennant they raised. */
+        if (GAME.checkArmed && GAME.level && GAME.level.checkX) {
+          centerText('FROM CHECKPOINT', 146, '#4AC8FF');
+        }
+      } else {
+        drawWorld();
+        scrim(0.45);
+        centerText('WORLD ' + GAME.world + '-' + GAME.lv, 92, '#FFFFFF');
+        centerText(THEMES[GAME.theme].name, 104, '#9FB6E8');
+        drawLifeCounter(120);
+        centerText('READY!', 148, '#FFD84A');
+      }
       break;
     case 'clear':
       drawWorld();
-      drawText('COURSE CLEAR!', 64, 92, '#FFF');
-      drawText('1UP', 116, 112, '#FFF');
+      if (GAME.walkDone) {
+        // let the flag slide + castle walk play, then present a clean result panel
+        scrim(0.6);
+        /* A fortress does not end with a flagpole, it ends with a bridge going out from
+           under a boss. Calling that "course clear" undersells the one beat in the game
+           that is supposed to feel like a win. */
+        if (GAME.level.fortress) bigHeadline('FORTRESS FALLS', 76, 3, HEAD_RED);
+        else bigHeadline('COURSE CLEAR', 76, 3, HEAD_TEAL);
+        centerText('TIME BONUS ' + String(GAME.time * 50).padStart(5, '0'), 112, '#FFD84A');
+        centerText('SCORE ' + String(GAME.score).padStart(6, '0'), 124, '#FFFFFF');
+        /* Three courses make a world, and clearing one used to look exactly like
+           clearing any other course -- the next card just said WORLD n+1. */
+        if (GAME.worldDone) {
+          centerText('WORLD ' + GAME.world + ' COMPLETE', 142, '#FFD84A');
+          centerText('NEXT: WORLD ' + (GAME.world + 1) + '-1', 154, '#9FB6E8');
+        }
+      }
       break;
     default: drawWorld();
   }
+  if (GAME.state === 'play' && !GAME.paused) drawHint();
   if (GAME.paused) {
-    ctx.globalAlpha = 0.6;
-    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 256, 240);
-    ctx.globalAlpha = 1;
-    drawText('PAUSED', 100, 110, '#FFF');
+    scrim(0.74);
+    centerText('PAUSED', 30, '#FFFFFF');
+    drawControls(52);
+    if (GAME.rebind >= 0) {
+      /* A panel over the pause screen, one action at a time. The prompt names the action
+         and the key it holds now, so the player can see what they are replacing. */
+      const a = REBINDABLE[GAME.rebind];
+      ctx.fillStyle = 'rgba(6,10,26,0.92)'; ctx.fillRect(24, 150, LOGICAL_W - 48, 62);
+      ctx.fillStyle = 'rgba(255,216,74,0.55)'; ctx.fillRect(24, 150, LOGICAL_W - 48, 1);
+      centerText('PRESS A KEY FOR', 156, '#9FB6E8');
+      centerText(a.toUpperCase() + '   (NOW ' + bindingText(a) + ')', 168, '#FFD84A');
+      centerText('ENTER SKIP    ESC CANCEL', 182, '#DDE8FF');
+      centerText((GAME.rebind + 1) + ' OF ' + REBINDABLE.length, 194, '#8C9BC4');
+    } else {
+      centerText(TOUCH ? 'TAP P TO RESUME' : 'PRESS ' + bindingText('pause') + ' TO RESUME', 198, '#9FB6E8');
+      if (!TOUCH) centerText(bindingText('quit') + ' QUIT TO TITLE     R REBIND KEYS', 210, '#8C9BC4');
+      if (GAME.rebindT > 0) centerText(GAME.rebindMsg, 186, '#6BD048');
+    }
+  }
+  // course transitions fade through black instead of hard-cutting
+  if (GAME.fade > 0) {
+    ctx.fillStyle = `rgba(0,0,0,${Math.min(1, GAME.fade)})`;
+    ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
   }
 }
 
