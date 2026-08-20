@@ -4320,6 +4320,14 @@ function drawBackground() {
     }
   }
   if (!L) return;
+  /* The lagoon's ceiling tiles were built specifically so "the water reads as
+     enclosed rather than as sky" -- but the background layer never got the memo.
+     Distant mountains, drifting clouds and bushes kept scrolling behind that
+     ceiling for the whole swim, the same inconsistency the fortress already
+     solved for itself with a wall. Land decor has nothing to attach to under a
+     solid ceiling, so it waits until the shore is actually in view (the camera's
+     right edge past the water's end) instead of showing through solid rock. */
+  if (L.water && cam + LOGICAL_W < L.waterTo * TILE) return;
   // decos are pre-sorted back to front and each carries its own parallax factor
   for (const d of L.decos) {
     const x = d.x - cam * d.px + (d.drift ? Math.sin((GAME.frame + d.x) * 0.004) * 2 : 0);
