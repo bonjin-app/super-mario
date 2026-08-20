@@ -1360,41 +1360,240 @@ const STAR_SPR = STAR_LOOKS.map(look => buildHeroSet(CHARS[0], { star: look }));
 
 
 /* ---------- sound ---------- */
+/* ---------- audio ----------
+   Every tone used to connect straight to the destination with an instant gain
+   jump: no master level, so overlapping voices clipped, and no attack ramp, so
+   each note started with a click. There is now a master bus with separate music
+   and sfx gains (which lets a jingle duck the music), a short attack/release on
+   every voice, and a real noise channel for percussion -- a sawtooth is a poor
+   stand-in for a brick shattering. */
 const Sound = {
-  ctx: null, muted: false,
-  init() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); },
-  tone(freq, dur, type='square', vol=0.12, delay=0, slide=0) {
+  ctx: null, muted: false, master: null, musicBus: null, sfxBus: null, noiseBuf: null,
+  init() {
+    if (!this.ctx) {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.85;
+      this.master.connect(this.ctx.destination);
+      this.musicBus = this.ctx.createGain(); this.musicBus.gain.value = 1;
+      this.sfxBus = this.ctx.createGain(); this.sfxBus.gain.value = 1;
+      this.musicBus.connect(this.master);
+      this.sfxBus.connect(this.master);
+      // one second of white noise, reused by every percussive hit
+      const sr = this.ctx.sampleRate;
+      this.noiseBuf = this.ctx.createBuffer(1, sr, sr);
+      const d = this.noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    // browsers start the context suspended until a real gesture unlocks it
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  },
+  tone(freq, dur, type = 'square', vol = 0.12, delay = 0, slide = 0, bus) {
     if (this.muted || !this.ctx) return;
     const t = this.ctx.currentTime + Math.max(0, delay);
     const o = this.ctx.createOscillator(), g = this.ctx.createGain();
     o.type = type; o.frequency.setValueAtTime(freq, t);
     if (slide) o.frequency.linearRampToValueAtTime(Math.max(30, freq + slide), t + dur);
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    o.connect(g).connect(this.ctx.destination); o.start(t); o.stop(t + dur + 0.02);
+    // 4ms attack kills the click, then an exponential tail
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(bus || this.sfxBus);
+    o.start(t); o.stop(t + dur + 0.02);
   },
-  jump()     { this.tone(320, 0.18, 'square', 0.1, 0, 380); },
-  coin()     { this.tone(988, 0.08); this.tone(1319, 0.35, 'square', 0.12, 0.08); },
-  stomp()    { this.tone(220, 0.1, 'triangle', 0.2, 0, -120); },
-  bump()     { this.tone(110, 0.08, 'square', 0.15); },
-  breakB()   { this.tone(180, 0.12, 'sawtooth', 0.12, 0, -100); this.tone(90, 0.15, 'square', 0.1, 0.02); },
-  power()    { [523,659,784,1047,1319].forEach((f,i)=>this.tone(f,0.09,'square',0.1,i*0.06)); },
-  grow()     { [392,523,659,784].forEach((f,i)=>this.tone(f,0.1,'square',0.1,i*0.08)); },
-  pipe()     { [784,659,523,392].forEach((f,i)=>this.tone(f,0.12,'square',0.1,i*0.09)); },
-  die()      { [660,622,587,494,392,330,262,196].forEach((f,i)=>this.tone(f,0.14,'square',0.1,i*0.11)); },
-  flag()     { [392,494,587,784,988,1175,1568,1976].forEach((f,i)=>this.tone(f,0.09,'square',0.1,i*0.07)); },
-  oneUp()    { [988,1319,1568,1175,1319,1568].forEach((f,i)=>this.tone(f,0.11,'square',0.1,i*0.08)); },
-  kick()     { this.tone(300, 0.08, 'square', 0.12, 0, 200); },
-  fireball() { this.tone(700, 0.12, 'square', 0.1, 0, -400); },
-  shrink()   { [784, 659, 523, 392].forEach((f,i)=>this.tone(f,0.12,'square',0.1,i*0.09)); }
+  /* filtered noise burst: the percussive half of the NES palette */
+  noise(dur, vol = 0.12, delay = 0, cutoff = 1800, sweepTo = 0, bus) {
+    if (this.muted || !this.ctx) return;
+    const t = this.ctx.currentTime + Math.max(0, delay);
+    const src = this.ctx.createBufferSource(); src.buffer = this.noiseBuf;
+    const f = this.ctx.createBiquadFilter(); f.type = 'bandpass';
+    f.frequency.setValueAtTime(cutoff, t);
+    if (sweepTo) f.frequency.exponentialRampToValueAtTime(Math.max(60, sweepTo), t + dur);
+    f.Q.value = 0.9;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f).connect(g).connect(bus || this.sfxBus);
+    src.start(t); src.stop(t + dur + 0.02);
+  },
+  /* pull the music down while a jingle plays, then bring it back */
+  duck(seconds) {
+    if (!this.ctx || !this.musicBus) return;
+    const t = this.ctx.currentTime, g = this.musicBus.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(0.12, t + 0.04);
+    g.linearRampToValueAtTime(1, t + seconds);
+  },
+
+  jump()     { this.tone(320, 0.18, 'square', 0.10, 0, 380); },
+  land()     { this.noise(0.07, 0.07, 0, 420, 180); },
+  coin()     { this.tone(988, 0.07, 'square', 0.11); this.tone(1319, 0.32, 'square', 0.12, 0.07); },
+  stomp()    { this.noise(0.09, 0.15, 0, 900, 220); this.tone(200, 0.09, 'triangle', 0.13, 0, -110); },
+  bump()     { this.tone(110, 0.07, 'square', 0.13); this.noise(0.05, 0.06, 0, 300, 140); },
+  breakB()   { this.noise(0.20, 0.20, 0, 2600, 260); this.tone(150, 0.14, 'square', 0.09, 0.01, -80); },
+  emerge()   { this.tone(392, 0.10, 'triangle', 0.09, 0, 260); },
+  // time up: two falling notes, so running out is heard before it is seen
+  timeUp()   { this.duck(1.0); [523, 330].forEach((f, i) => this.tone(f, 0.22, 'square', 0.11, i * 0.16)); },
+  // world complete: a longer flourish than a course fanfare
+  worldDone() {
+    this.duck(2.2);
+    [523, 659, 784, 1047, 988, 1047, 1319].forEach((f, i) => this.tone(f, 0.16, 'square', 0.11, i * 0.13));
+    [131, 165, 196, 262].forEach((f, i) => this.tone(f, 0.24, 'triangle', 0.08, i * 0.22));
+  },
+  // the boss: a low growl on sight, a heavier one when it lands
+  roar()     { this.tone(78, 0.42, 'sawtooth', 0.12, 0, -22); this.noise(0.3, 0.10, 0, 340, 120); },
+  // the bridge going out from under it
+  collapse() { this.duck(2.0); this.noise(0.7, 0.20, 0, 900, 90);
+               [196, 165, 131, 98, 78].forEach((f, i) => this.tone(f, 0.3, 'sawtooth', 0.10, i * 0.12)); },
+  // checkpoint: a short rising pair, distinct from the coin and the powerup
+  checkpoint() { [659, 988].forEach((f, i) => this.tone(f, 0.13, 'triangle', 0.11, i * 0.09));
+                 this.noise(0.06, 0.05, 0, 2400, 900); },
+  power()    { [523,659,784,1047,1319].forEach((f,i)=>this.tone(f,0.09,'square',0.10,i*0.06)); },
+  grow()     { [392,523,659,784].forEach((f,i)=>this.tone(f,0.10,'square',0.10,i*0.08)); },
+  pipe()     { [784,659,523,392].forEach((f,i)=>this.tone(f,0.12,'square',0.10,i*0.09)); },
+  kick()     { this.tone(300, 0.08, 'square', 0.11, 0, 200); this.noise(0.05, 0.07, 0, 1400, 500); },
+  fireball() { this.tone(700, 0.12, 'square', 0.10, 0, -400); this.noise(0.08, 0.05, 0, 2200, 900); },
+  shrink()   { [784,659,523,392].forEach((f,i)=>this.tone(f,0.12,'square',0.10,i*0.09)); },
+  flag()     { [392,494,587,784,988,1175,1568,1976].forEach((f,i)=>this.tone(f,0.09,'square',0.10,i*0.07)); },
+  oneUp()    { this.duck(1.1); [988,1319,1568,1175,1319,1568].forEach((f,i)=>this.tone(f,0.11,'square',0.11,i*0.08)); },
+  die()      { this.duck(1.6); [660,622,587,494,392,330,262,196].forEach((f,i)=>this.tone(f,0.14,'square',0.11,i*0.11)); },
+  /* Course clear needed its own cadence: the flag chime already plays when you
+     touch the pole, so reaching the castle had no musical resolution at all. */
+  fanfare()  {
+    this.duck(1.4);
+    [[523,0],[659,0.10],[784,0.20],[1047,0.30],[1319,0.42],[1047,0.56],[1319,0.66],[1568,0.78]]
+      .forEach(([f,d]) => { this.tone(f, 0.20, 'square', 0.10, d); this.tone(f/2, 0.20, 'triangle', 0.07, d); });
+  },
+  /* the run out of time deserves a warning; there was none */
+  hurry()    {
+    this.duck(0.9);
+    [[1047,0],[1047,0.12],[1319,0.24],[1047,0.40],[784,0.52]]
+      .forEach(([f,d]) => this.tone(f, 0.11, 'square', 0.11, d));
+  },
+  gameOver() {
+    [[523,0],[494,0.16],[440,0.32],[392,0.48],[262,0.68]]
+      .forEach(([f,d]) => { this.tone(f, 0.28, 'triangle', 0.12, d); this.tone(f/2, 0.28, 'square', 0.06, d); });
+  },
+  /* The card already turns the top row gold and blinks NEW RECORD; the descending
+     gameOver() motif that plays first has nothing to say about that. A short bright
+     triad, delayed 1s so it lands after the descent finishes instead of fighting it --
+     not oneUp's run (that means a life) and not fanfare's full length (that is the
+     course-clear reward, a bigger moment than any one run's placement). */
+  record() {
+    [[784,0],[988,0.09],[1319,0.18]].forEach(([f,d]) => this.tone(f, 0.16, 'square', 0.11, 1.0 + d));
+  }
 };
-/* original chiptune loop (A pentatonic, Am-F-C-G) */
+/* ---------- original chiptune tracks ----------
+   One loop used to play on every course, so all three themes sounded the same.
+   Each theme now has its own 32-step track with its own key, tempo and voices. */
+const TRACKS = [
+  { // MEADOW -- A minor pentatonic, bright square lead. A section then a lift to the 5th.
+    name: 'MEADOW', tempo: 0.20, leadWave: 'square', bassWave: 'triangle',
+    lead: [440,0,523,587,659,0,587,523, 587,0,659,784,659,587,523,0,
+           440,0,523,587,659,784,880,784, 659,587,523,880,784,659,523,0,
+           659,0,784,880,988,0,880,784, 880,0,988,1175,988,880,784,0,
+           659,0,784,880,988,1175,1319,1175, 988,880,784,659,587,523,440,0],
+    bass: [110,0,110,0,110,0,110,0, 87,0,87,0,87,0,87,0,
+           131,0,131,0,131,0,131,0, 98,0,98,0,98,0,98,0,
+           165,0,165,0,165,0,165,0, 131,0,131,0,131,0,131,0,
+           196,0,196,0,147,0,147,0, 110,0,110,0,110,0,110,0],
+    drum: [1,0,2,0,3,0,2,0, 1,0,2,0,3,0,2,2,
+           1,0,2,0,3,0,2,0, 1,0,2,0,3,2,2,2,
+           1,0,2,0,3,0,2,0, 1,0,2,0,3,0,2,2,
+           1,0,2,0,3,0,2,0, 1,1,2,0,3,2,2,2]
+  },
+  { // SUNSET -- slower, D dorian, warmer triangle lead; the B section drops an octave
+    name: 'SUNSET', tempo: 0.24, leadWave: 'triangle', bassWave: 'triangle',
+    lead: [587,0,698,0,784,880,784,698, 659,0,587,0,523,587,659,0,
+           784,0,880,0,988,880,784,698, 659,587,523,0,587,659,587,0,
+           392,0,440,0,523,587,523,440, 392,0,349,0,392,440,523,0,
+           587,0,523,0,494,440,392,349, 392,0,440,523,587,0,0,0],
+    bass: [ 73,0, 73,0, 98,0, 98,0, 110,0,110,0, 87,0, 87,0,
+           73,0, 73,0, 98,0, 98,0, 65,0, 65,0, 73,0, 73,0,
+           49,0, 49,0, 65,0, 65,0, 73,0, 73,0, 58,0, 58,0,
+           49,0, 49,0, 65,0, 73,0, 98,0, 98,0, 73,0, 73,0],
+    drum: [1,0,0,0,3,0,0,0, 1,0,0,2,3,0,0,0,
+           1,0,0,0,3,0,0,0, 1,0,0,2,3,0,2,0,
+           1,0,0,0,3,0,0,0, 1,0,0,0,3,0,0,0,
+           1,0,0,0,3,0,2,0, 1,0,2,0,3,0,0,0]
+  },
+  { // MIDNIGHT -- sparse, E natural minor, low sawtooth pulse; B section doubles the pulse
+    name: 'MIDNIGHT', tempo: 0.22, leadWave: 'square', bassWave: 'sawtooth',
+    lead: [659,0,0,784,659,0,587,0, 494,0,0,587,494,0,440,0,
+           659,0,784,988,880,0,784,0, 659,0,587,494,440,0,494,0,
+           988,0,0,880,988,0,1175,0, 988,0,0,880,784,0,659,0,
+           587,0,659,784,880,0,988,0, 1175,0,988,880,784,0,659,0],
+    bass: [ 82,0, 0,0, 82,0, 0,0, 65,0, 0,0, 65,0, 0,0,
+            98,0, 0,0, 98,0, 0,0, 73,0, 0,0, 73,0, 0,0,
+            82,0,82,0, 82,0,82,0, 65,0,65,0, 65,0,65,0,
+            98,0,98,0, 98,0,98,0, 73,0,73,0, 73,73,73,0],
+    drum: [1,0,0,0,0,0,3,0, 1,0,0,0,0,0,3,0,
+           1,0,0,0,0,0,3,0, 1,0,0,2,0,0,3,2,
+           1,0,2,0,3,0,2,0, 1,0,2,0,3,0,2,0,
+           1,0,2,0,3,0,2,0, 1,1,2,0,3,2,2,2]
+  },
+  { /* CAVERN -- the bonus room. Fast, tight, and short: it is a place you are in for
+       fifteen seconds, so the B section is just the A section a fourth higher. */
+    name: 'CAVERN', tempo: 0.14, leadWave: 'square', bassWave: 'triangle',
+    lead: [523,0,523,0,392,0,392,0, 330,0,330,392,523,0,392,0,
+           587,0,587,0,440,0,440,0, 349,0,349,440,587,0,440,0,
+           698,0,698,0,523,0,523,0, 440,0,440,523,698,0,523,0,
+           784,0,784,0,587,0,587,0, 466,0,466,587,784,0,587,0],
+    bass: [131,0,131,0,131,0,131,0, 98,0,98,0,98,0,98,0,
+           147,0,147,0,147,0,147,0, 110,0,110,0,110,0,110,0,
+           175,0,175,0,175,0,175,0, 131,0,131,0,131,0,131,0,
+           196,0,196,0,196,0,196,0, 147,0,147,0,147,0,147,0],
+    drum: [1,2,2,2,1,2,2,2, 1,2,2,2,1,2,2,2,
+           1,2,2,2,1,2,2,2, 1,2,2,2,1,2,2,2,
+           1,2,2,2,1,2,2,2, 1,2,2,2,1,2,2,2,
+           1,2,2,2,1,2,2,2, 1,2,2,2,1,2,3,3]
+  },
+  { /* FORTRESS -- minor second in the bass, no resolution in the lead. The B section
+       climbs and still refuses to land. */
+    name: 'FORTRESS', tempo: 0.19, leadWave: 'square', bassWave: 'sawtooth',
+    lead: [415,0,392,0,311,0,0,0, 415,0,392,0,311,0,262,0,
+           466,0,415,0,349,0,0,0, 466,0,415,0,349,0,311,0,
+           523,0,466,0,415,0,0,0, 523,0,466,0,415,0,392,0,
+           622,0,554,0,466,0,415,0, 392,0,349,0,311,0,0,0],
+    bass: [ 52,0, 55,0, 52,0, 55,0, 52,0, 55,0, 52,0, 55,0,
+            58,0, 62,0, 58,0, 62,0, 58,0, 62,0, 58,0, 62,0,
+            65,0, 69,0, 65,0, 69,0, 65,0, 69,0, 65,0, 69,0,
+            78,0, 82,0, 78,0, 82,0, 52,0, 55,0, 52,0, 55,0],
+    drum: [1,0,0,0,1,0,0,0, 1,0,0,0,1,0,3,0,
+           1,0,0,0,1,0,0,0, 1,0,0,0,1,0,3,3,
+           1,0,3,0,1,0,3,0, 1,0,3,0,1,0,3,0,
+           1,1,3,0,1,1,3,0, 1,1,3,3,1,1,3,3]
+  },
+  { /* LAGOON -- slow, wide intervals, triangle everywhere. The B section sinks a third
+       and the percussion thins to a heartbeat: nothing down here is urgent. */
+    name: 'LAGOON', tempo: 0.28, leadWave: 'triangle', bassWave: 'triangle',
+    lead: [392,0,0,0,523,0,0,0, 587,0,0,659,523,0,0,0,
+           440,0,0,0,587,0,0,0, 659,0,0,784,587,0,0,0,
+           349,0,0,0,440,0,0,0, 523,0,0,587,440,0,0,0,
+           392,0,0,0,523,0,0,0, 587,0,659,784,880,0,0,0],
+    bass: [ 98,0, 0,0, 98,0, 0,0, 131,0, 0,0, 131,0, 0,0,
+           110,0, 0,0, 110,0, 0,0, 147,0, 0,0, 147,0, 0,0,
+            87,0, 0,0, 87,0, 0,0, 110,0, 0,0, 110,0, 0,0,
+            98,0, 0,0, 98,0, 0,0, 131,0, 0,0, 147,0, 0,0],
+    drum: [1,0,0,0,0,0,0,0, 1,0,0,0,0,0,2,0,
+           1,0,0,0,0,0,0,0, 1,0,0,0,0,0,2,0,
+           1,0,0,0,0,0,0,0, 1,0,0,0,0,0,0,0,
+           1,0,0,0,0,0,2,0, 1,0,0,0,3,0,2,0]
+  }
+];
+
 const BGM = {
-  playing: false, timer: null, step: 0, nextTime: 0,
-  tempo: 0.2,
-  lead:  [440,0,523,587,659,0,587,523, 587,0,659,784,659,587,523,0,
-          440,0,523,587,659,784,880,784, 659,587,523,880,784,659,523,0],
-  bass:  [110,0,110,0,110,0,110,0, 87,0,87,0,87,0,87,0,
-          131,0,131,0,131,0,131,0, 98,0,98,0,98,0,98,0],
+  playing: false, timer: null, step: 0, nextTime: 0, trackIdx: 0,
+  track() { return TRACKS[this.trackIdx] || TRACKS[0]; },
+  /* Switching tracks mid-level would cut a note off, so a change only takes
+     effect the next time the loop is started. */
+  select(i) {
+    if (i === this.trackIdx) return;
+    this.trackIdx = i;
+    if (this.playing) { this.stop(); this.start(); }
+  },
   start() {
     if (this.playing || !Sound.ctx) return;
     this.playing = true; this.step = 0;
@@ -1404,12 +1603,27 @@ const BGM = {
   stop() { this.playing = false; if (this.timer) clearInterval(this.timer); this.timer = null; },
   tick() {
     if (!Sound.ctx) return;
+    const t = this.track();
+    /* A throttled or backgrounded tab leaves nextTime far in the past, and the
+       catch-up loop below then schedules every missed step at once: measured 197
+       notes in a single tick after 30 seconds away, against 2 in a healthy one.
+       That lands as one clipped blast the moment the player comes back. Too far
+       behind to be music, so drop the debt and start the phrase again -- the same
+       discipline the fixed-timestep loop uses for its own catch-up. */
+    const now = Sound.ctx.currentTime;
+    if (this.nextTime < now - 0.5) { this.nextTime = now + 0.06; this.step = 0; }
     while (this.nextTime < Sound.ctx.currentTime + 0.16) {
-      const s = this.step % 32;
+      const s = this.step % t.lead.length;      // the track decides how long its loop is
       const d = this.nextTime - Sound.ctx.currentTime;
-      if (this.lead[s]) Sound.tone(this.lead[s], 0.16, 'square', 0.04, d);
-      if (this.bass[s]) Sound.tone(this.bass[s], 0.3, 'triangle', 0.11, d);
-      this.nextTime += this.tempo;
+      if (t.lead[s]) Sound.tone(t.lead[s], 0.16, t.leadWave, 0.04, d, 0, Sound.musicBus);
+      if (t.bass[s]) Sound.tone(t.bass[s], 0.3, t.bassWave, 0.11, d, 0, Sound.musicBus);
+      /* Percussion on the music bus, so a jingle ducks the drums with everything else.
+         1 = kick (low, short sweep down), 2 = hat (bright and clipped), 3 = snare. */
+      const dr = t.drum && t.drum[s];
+      if (dr === 1) Sound.noise(0.085, 0.085, d, 190, 90, Sound.musicBus);
+      else if (dr === 2) Sound.noise(0.035, 0.030, d, 6200, 4200, Sound.musicBus);
+      else if (dr === 3) Sound.noise(0.075, 0.055, d, 1500, 700, Sound.musicBus);
+      this.nextTime += t.tempo;
       this.step++;
     }
   }
