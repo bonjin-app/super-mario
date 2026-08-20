@@ -1633,25 +1633,248 @@ const BGM = {
 const keys = {};
 window.addEventListener('keydown', e => {
   if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
+  /* Rebind mode reads the physical key, not the action it currently maps to -- otherwise
+     pressing the key you want to reassign would trigger the thing it already does. */
+  /* Opening the rebind screen is checked on the physical key, not on the action it maps
+     to: the first version used 'k', which is a default binding for fire, so normKey
+     returned 'fire' and the hotkey silently did nothing. A hotkey that any binding can
+     shadow is not a hotkey. */
+  if (GAME.rebind < 0 && keyId(e) === 'r' && GAME.paused && GAME.state === 'play' && !TOUCH) {
+    e.preventDefault();
+    if (e.repeat) return;
+    Sound.init();
+    GAME.rebind = 0; GAME.rebindMsg = ''; GAME.rebindT = 0;
+    return;
+  }
+  if (GAME.rebind >= 0) {
+    e.preventDefault();
+    if (e.repeat) return;
+    Sound.init();
+    const id = keyId(e);
+    if (id === 'escape') { GAME.rebind = -1; GAME.rebindMsg = 'CANCELLED'; GAME.rebindT = 90; return; }
+    if (id === 'enter') {                      // skip this one, keep what it had
+      GAME.rebind++;
+      if (GAME.rebind >= REBINDABLE.length) { GAME.rebind = -1; GAME.rebindMsg = 'SAVED'; GAME.rebindT = 90; }
+      return;
+    }
+    const action = REBINDABLE[GAME.rebind];
+    if (bindKey(action, id)) {
+      Sound.coin();
+      GAME.rebind++;
+      if (GAME.rebind >= REBINDABLE.length) { GAME.rebind = -1; GAME.rebindMsg = 'SAVED'; GAME.rebindT = 90; }
+    } else {
+      Sound.bump();
+      GAME.rebindMsg = 'RESERVED - PICK ANOTHER'; GAME.rebindT = 70;
+    }
+    return;
+  }
   const k = normKey(e); keys[k] = true;
   if (e.repeat) return;
   Sound.init();
   onKeyPress(k);
 });
 window.addEventListener('keyup', e => { keys[normKey(e)] = false; });
-function normKey(e) {
-  switch (e.key) {
-    case 'ArrowLeft': case 'a': case 'A': return 'left';
-    case 'ArrowRight': case 'd': case 'D': return 'right';
-    case 'ArrowUp': case 'w': case 'W': case 'x': case 'X': case ' ': return 'jump';
-    case 'z': case 'Z': case 'Shift': return 'run';
-    case 'f': case 'F': case 'k': case 'K': return 'fire';
-    case 'Enter': return 'start';
-    case 'm': case 'M': return 'mute';
-    case 'b': case 'B': return 'bgm';
-    case 'p': case 'P': case 'Escape': return 'pause';
-    default: return e.key.toLowerCase();
+/* Switching away from the tab used to leave the game live AND leave every held
+   key stuck down: keyup is never delivered to a blurred window, so a player who
+   Cmd-Tabbed mid-run came back to a hero that had been walking right the whole
+   time. The clock kept running too. Blur clears the key state and pauses a live
+   course; the player unpauses when they are actually looking at it. */
+function releaseAllKeys() { for (const k in keys) keys[k] = false; }
+function autoPause() {
+  releaseAllKeys();
+  /* releaseAllKeys() only clears the input state -- on touch, a finger already down on
+     a pad button when the tab loses focus leaves that button's `.held` highlight on
+     screen with nothing left to clear it, since its own pointerup/cancel/leave never
+     fires while the tab is backgrounded. Same bug this function exists to fix in the
+     first place (stuck keys after blur), just the visual half of it. */
+  if (TOUCH) {
+    const pad = document.getElementById('pad');
+    if (pad) for (const btn of pad.querySelectorAll('.pad-btn.held')) btn.classList.remove('held');
   }
+  if (GAME.state === 'play' && !GAME.paused) { GAME.paused = true; BGM.stop(); }
+}
+window.addEventListener('blur', autoPause);
+document.addEventListener('visibilitychange', () => { if (document.hidden) autoPause(); });
+/* Keys are stored lower-case, and named ones keep their DOM spelling ('ArrowLeft',
+   ' ', 'Enter', 'Shift'). The action order here is also the order the rebind screen
+   walks through. */
+const ACTIONS = ['left', 'right', 'jump', 'run', 'fire', 'down', 'pause', 'quit', 'mute', 'bgm', 'start'];
+const DEFAULT_KEYS = {
+  left:  ['arrowleft', 'a'],
+  right: ['arrowright', 'd'],
+  jump:  ['arrowup', 'w', 'x', ' '],
+  run:   ['z', 'shift'],
+  fire:  ['f', 'k'],
+  down:  ['arrowdown', 's'],
+  pause: ['p', 'escape'],
+  quit:  ['q'],
+  mute:  ['m'],
+  bgm:   ['b'],
+  start: ['enter']
+};
+/* Rebindable from the pause screen; the rest are either menu plumbing or reserved. */
+const REBINDABLE = ['left', 'right', 'jump', 'run', 'fire', 'down'];
+let KEYS_MAP = {};
+function resetKeys() { KEYS_MAP = {}; for (const a of ACTIONS) KEYS_MAP[a] = DEFAULT_KEYS[a].slice(); }
+resetKeys();
+function keyId(e) { return String(e.key).toLowerCase(); }
+function normKey(e) {
+  const id = keyId(e);
+  for (const a of ACTIONS) if (KEYS_MAP[a].includes(id)) return a;
+  return id;
+}
+/* Give `id` to `action`, taking it from whoever else holds it -- but never leave an
+   action with nothing, or the player could unbind their only way to move. */
+function bindKey(action, id) {
+  if (!REBINDABLE.includes(action)) return false;
+  if (id === 'escape') return false;                 // the way out of the menu is reserved
+  for (const a of ACTIONS) {
+    if (a === action) continue;
+    const i = KEYS_MAP[a].indexOf(id);
+    if (i < 0) continue;
+    if (KEYS_MAP[a].length === 1) return false;      // that action would be left with none
+    KEYS_MAP[a].splice(i, 1);
+  }
+  KEYS_MAP[action] = [id];
+  saveSettings();
+  syncKeyLegend();
+  return true;
+}
+/* How a binding is spelled on screen. */
+const KEY_LABEL = {
+  'arrowleft': 'LEFT', 'arrowright': 'RIGHT', 'arrowup': 'UP', 'arrowdown': 'DOWN',
+  ' ': 'SPACE', 'escape': 'ESC', 'enter': 'ENTER', 'shift': 'SHIFT'
+};
+function keyName(id) { return (KEY_LABEL[id] || id).toUpperCase(); }
+function bindingText(action) { return KEYS_MAP[action].map(keyName).join(' / '); }
+
+/* ---------- touch pad ----------
+   The page has always declared a mobile viewport but shipped keyboard-only
+   input, so it could not be played on a phone at all. The buttons feed the same
+   `keys` map and onKeyPress() the keyboard does, so no game code special-cases
+   touch. On the title screen the d-pad doubles as hero select, which is why
+   press (not hold) also has to fire onKeyPress. */
+/* Live, not read once: a player can flip the system setting while the tab is open, and
+   the next frame should already respect it. */
+var REDUCED = false;
+try {
+  const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+  REDUCED = mq.matches;
+  const onChange = (e) => { REDUCED = e.matches; };
+  if (mq.addEventListener) mq.addEventListener('change', onChange);
+  else if (mq.addListener) mq.addListener(onChange);
+} catch (e) { REDUCED = false; }
+
+var TOUCH = false; // read by fit(), which runs at load before setupTouch()
+function setupTouch() {
+  const pad = document.getElementById('pad');
+  if (!pad) return;
+  const coarse = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  if (!coarse) return;
+  TOUCH = true;
+  pad.hidden = false;
+  document.body.classList.add('touch');
+  for (const btn of pad.querySelectorAll('.pad-btn')) {
+    const k = btn.dataset.key;
+    const press = (e) => {
+      e.preventDefault();
+      if (keys[k]) return;
+      keys[k] = true;
+      btn.classList.add('held');
+      Sound.init();
+      onKeyPress(k);
+      // a tap on the d-pad also starts the game from the title / game over
+      if (k === 'jump' && (GAME.state === 'gameover')) onKeyPress('start');
+    };
+    const release = (e) => { e.preventDefault(); keys[k] = false; btn.classList.remove('held'); };
+    btn.addEventListener('pointerdown', press);
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+    btn.addEventListener('pointerleave', release);
+    btn.addEventListener('contextmenu', e => e.preventDefault());
+  }
+}
+
+/* ---------- page chrome ----------
+   The top bar carries what the playfield HUD does not: the saved best score, the
+   chosen hero and the audio state. Written only when a value actually changes --
+   touching the DOM every frame would cost a layout flush on a canvas game that
+   otherwise never dirties layout. */
+const chromeEls = {};
+let chromeCache = '';
+/* The page chrome lists the keys too, and it was a hand-written copy of the defaults.
+   After a rebind it would have been simply wrong, so it is generated. */
+function syncKeyLegend() {
+  if (typeof document === 'undefined') return;
+  const kb = (id) => '<kbd>' + keyName(id) + '</kbd>';
+  const list = document.getElementById('keys');
+  if (list) {
+    const rows = [
+      [KEYS_MAP.left.concat(KEYS_MAP.right).slice(0, 2), '이동', ''],
+      [KEYS_MAP.jump.slice(0, 1), '점프', '길게 누르면 높이'],
+      [KEYS_MAP.run.slice(0, 1), '달리기', '누른 채 이동'],
+      [KEYS_MAP.fire.slice(0, 1), '발사', '꽃 획득 후'],
+      [KEYS_MAP.down.slice(0, 1), '파이프 진입', '진입 가능한 파이프 위에서'],
+      [KEYS_MAP.pause.slice(0, 1), '일시정지', 'R 로 키 변경'],
+      [KEYS_MAP.quit.slice(0, 1), '타이틀로', '일시정지 중에만'],
+      [KEYS_MAP.mute.slice(0, 1), '음소거', ''],
+      [KEYS_MAP.bgm.slice(0, 1), '음악', '']
+    ];
+    list.innerHTML = rows.map(([ids, label, note]) =>
+      '<li>' + ids.map(kb).join('') + '<b>' + label +
+      (note ? ' <i>' + note + '</i>' : '') + '</b></li>').join('');
+  }
+  const tip = document.getElementById('tip');
+  if (tip) {
+    tip.innerHTML = '방향키 이동 · ' + kb(KEYS_MAP.jump[0]) + ' 점프 · ' +
+      kb(KEYS_MAP.run[0]) + ' 달리기 · ' + kb(KEYS_MAP.fire[0]) + ' 발사';
+  }
+}
+function syncChrome() {
+  if (!chromeEls.best) {
+    chromeEls.hero = document.getElementById('stHero');
+    chromeEls.best = document.getElementById('stBest');
+    chromeEls.audio = document.getElementById('stAudio');
+    if (!chromeEls.best) return;
+  }
+  const hero = 'HERO ' + CHARS[GAME.charIdx].name;
+  const best = 'BEST ' + String(Math.max(GAME.high, GAME.score)).padStart(6, '0');
+  const audio = 'SOUND ' + (Sound.muted ? 'OFF' : 'ON') + ' · MUSIC ' + (GAME.bgmOn ? 'ON' : 'OFF');
+  const key = hero + best + audio;
+  if (key === chromeCache) return;
+  chromeCache = key;
+  chromeEls.hero.textContent = hero;
+  chromeEls.best.textContent = best;
+  chromeEls.audio.textContent = audio;
+}
+
+/* ---------- settings persistence ---------- */
+const SETTINGS_KEY = 'pipoSettings';
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    if (typeof s.charIdx === 'number' && s.charIdx >= 0 && s.charIdx < CHARS.length) GAME.charIdx = s.charIdx;
+    if (typeof s.muted === 'boolean') Sound.muted = s.muted;
+    if (typeof s.bgmOn === 'boolean') GAME.bgmOn = s.bgmOn;
+    /* Stored bindings are merged action by action and validated: a corrupt or partial
+       entry falls back to that action's default rather than leaving it unbound. */
+    if (s.keys && typeof s.keys === 'object') {
+      for (const a of ACTIONS) {
+        const v = s.keys[a];
+        if (Array.isArray(v) && v.length && v.every(k => typeof k === 'string' && k.length)) {
+          KEYS_MAP[a] = v.map(k => k.toLowerCase());
+        }
+      }
+      if (!KEYS_MAP.pause.includes('escape')) KEYS_MAP.pause.push('escape');
+    }
+  } catch (e) { /* corrupt or blocked storage: fall back to defaults */ }
+}
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      charIdx: GAME.charIdx, muted: Sound.muted, bgmOn: GAME.bgmOn, keys: KEYS_MAP
+    }));
+  } catch (e) { /* private mode: settings just do not persist */ }
 }
 
 /* ---------- level building (3 rotating layouts) ---------- */
