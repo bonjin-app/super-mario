@@ -1878,25 +1878,120 @@ function saveSettings() {
 }
 
 /* ---------- level building (3 rotating layouts) ---------- */
-function buildLevel(lv) {
-  const variant = (lv - 1) % 3;
+function buildLevel(lv, world = 1) {
+  /* Four layouts over three field courses, shifted by world: 1 runs 0/1/2, world 2
+     runs 1/2/3, world 3 runs 2/3/0. Nobody sees the same three in the same order twice
+     in a row, and the layout/palette pairing changes every lap. */
+  const LAYOUTS = 5;
+  const variant = (lv - 1 + (world - 1)) % LAYOUTS;
+  /* Enemies get modestly faster each world so a revisited layout still plays
+     differently. Capped so the 3rd lap does not become unreadable. */
+  const pace = 1 + Math.min(world - 1, 5) * 0.09;
   const W = 224, H = 15;
   const map = Array.from({ length: H }, () => Array(W).fill(' '));
   const set = (x, y, c) => { if (x >= 0 && x < W && y >= 0 && y < H) map[y][x] = c; };
   for (let x = 0; x < W; x++) { map[13][x] = 'X'; map[14][x] = 'X'; }
-  const gap = (a, b) => { for (let x=a; x<=b; x++) { map[13][x]=' '; map[14][x]=' '; } };
+  /* Water courses set these; everything else leaves them alone. `waterTo` is where the
+     water ends, so the physics switch is a position test rather than a level-wide mode
+     -- the last stretch of a lagoon is dry land and behaves like one. */
+  let water = false, waterTo = 0;
+  const gapCols = new Set();
+  const gap = (a, b) => { for (let x=a; x<=b; x++) { map[13][x]=' '; map[14][x]=' '; gapCols.add(x); } };
   const blk = (x,y,c='?') => set(x,y,c);
   const pipe = (x,h) => { set(x,13-h,'T'); set(x+1,13-h,'T'); for (let y=14-h;y<=12;y++){ set(x,y,'P'); set(x+1,y,'P'); } };
+  /* An enterable pipe. `E` is a pipe top the player can drop into; the exit is a
+     different pipe further along the course, so the detour also buys progress --
+     the same trade the original makes. */
+  const entries = [];
+  const pipeIn = (x, h, exitTx, room = 0) => {
+    pipe(x, h);
+    set(x, 13 - h, 'E'); set(x + 1, 13 - h, 'E');
+    /* `room` is authored, not derived: the first version keyed the layout off the
+       entrance column modulo three, so two of the four entrances collided and one of
+       the three rooms was unreachable in the shipped game. */
+    entries.push({ tx: x, ty: 13 - h, exitTx, room });
+  };
+  /* Loose coins live in the map as non-solid 'c' cells. Rewards used to come
+     only out of ? blocks, which left long stretches with nothing to collect and
+     no visual hint about where to go. */
+  /* Coins only ever fill blank cells. set() clobbers unconditionally, so a coin
+     placed on a brick, ? block or pipe would silently delete level geometry --
+     exactly how an unreachable ledge or a broken pipe gets introduced. Skipping
+     occupied cells makes that class of mistake impossible by construction. */
+  const coinAt = (x, y) => {
+    if (x < 0 || x >= W || y < 0 || y >= H) return;
+    if (map[y][x] !== ' ') return;
+    map[y][x] = 'c';
+  };
+  const coinRow = (x0, x1, y) => { for (let x = x0; x <= x1; x++) coinAt(x, y); };
+  // an arc of coins over a gap: doubles as a read of the jump you need to make
+  const coinArc = (cx, y, span) => {
+    for (let i = -span; i <= span; i++) {
+      const dy = Math.round((i * i) / Math.max(1, span) * 0.8);
+      coinAt(cx + i, y + dy);
+    }
+  };
+  /* Lifts. `plat(tile, row, kind, travelTiles)` shuttles between two points on a
+     cosine, so it eases at both ends and never needs a random seed to stay in sync
+     across a respawn. Coins are placed along the path, not under it: the reward is
+     the ride. */
+  const plats = [];
+  const plat = (tx, ty, kind, travel) => plats.push({
+    kind, w: 32, h: 8,
+    x: tx * TILE, y: ty * TILE,
+    x0: tx * TILE, y0: ty * TILE,
+    from: kind === 'h' ? tx * TILE : ty * TILE,
+    to: kind === 'h' ? (tx + travel) * TILE : (ty + travel) * TILE,
+    speed: 0.016, t: 0, dx: 0, dy: 0
+  });
+  /* The topmost solid row in a column, i.e. the surface something standing here would
+     rest on. Every spawner used a hardcoded row 13, which is only correct while the
+     ground is one flat plane -- a terraced layout would bury its own patrols. */
+  const surfaceRow = (x) => {
+    /* Only terrain rows count. Scanning from row 5 put 409 walkers on top of floating
+       brick rows -- a ? block two tiles over a walkway is not the ground. Terraces live
+       at rows 11-12, the plain floor at 13. */
+    for (let y = 11; y <= 14; y++) if (solid(map[y][x])) return y;
+    return 15;
+  };
+  const surfaceY = (x, h) => surfaceRow(x) * TILE - h;
+
   const enemies = [];
-  const P = (x) => enemies.push({ type:'puff', x: x*TILE, y: 13*TILE - 12, w:12, h:12, vx:-0.45, vy:0, t:0 });
-  const S = (x) => enemies.push({ type:'shelly', x: x*TILE, y: 13*TILE - 16, w:12, h:16, vx:-0.35, vy:0, t:0 });
+  const P = (x) => enemies.push({ type:'puff', x: x*TILE, y: surfaceY(x, 12), w:12, h:12, vx:-0.45*pace, vy:0, t:0 });
+  const S = (x) => enemies.push({ type:'shelly', x: x*TILE, y: surfaceY(x, 16), w:12, h:16, vx:-0.35*pace, vy:0, t:0 });
+  // SPIKO: spined walker. Stomping it hurts you; fire, star or a kicked shell kills it.
+  const SPK = (x) => enemies.push({ type:'spiko', spiky:true, x: x*TILE, y: surfaceY(x, 14), w:12, h:14, vx:-0.55*pace, vy:0, t:0 });
+  // FLAPPY: hops on a timer, so it threatens the airspace a walker never does
+  const FLP = (x) => enemies.push({ type:'flappy', x: x*TILE, y: surfaceY(x, 14), w:12, h:14, vx:-0.5*pace, vy:0, t:0, hop:0 });
+  /* GLIDER: sine path through the air, no gravity. `baseY` is the centre of its lane
+     and it never dips into the ground, so it cannot be walked into by accident. */
+  /* FISH: the same sine path a glider flies, in water. Kept as its own type so the
+     art and the "cannot be stomped here" rule can differ without touching motion. */
+  const FSH = (x, row, amp) => enemies.push({
+    type: 'fish', x: x*TILE, y: row*TILE, w: 14, h: 12,
+    vx: -0.62*pace, vy: 0, t: (x * 31) % 360, baseY: row*TILE, amp: amp || 22, freq: 0.024, air: true
+  });
+  const GLD = (x, row, amp) => enemies.push({
+    type: 'glider', x: x*TILE, y: row*TILE, w: 14, h: 12,
+    vx: -0.7*pace, vy: 0, t: (x * 23) % 360, baseY: row*TILE, amp: amp || 18, freq: 0.028, air: true
+  });
+  /* CANNON: static, harmless in itself, fires a BOLT on a timer. It stands on its own
+     plinth of used blocks, which is real terrain -- the entity is only the barrel. */
+  const CAN = (x, row) => {
+    for (let y = row + 1; y <= 12; y++) set(x, y, 'U');
+    enemies.push({ type: 'cannon', x: x*TILE, y: row*TILE, w: 16, h: 16,
+                   vx: 0, vy: 0, t: (x * 17) % 120, cool: Math.max(70, 130 - world * 6), air: true });
+  };
+  // CHOMP: rises out of a pipe mouth and retracts. Never stompable, killable by fire.
+  const CHP = (x, ph) => enemies.push({ type:'chomp', x: x*TILE + 2, y: (13-ph)*TILE, w:12, h:16,
+    baseY: (13-ph)*TILE, vx:0, vy:0, t:0, phase: (x * 37) % 150 });
 
   if (variant === 0) {
     gap(69,70); gap(86,88); gap(153,155);
     blk(16,9);
     blk(20,9,'B'); blk(21,9,'M'); blk(22,9); blk(23,9,'B'); blk(24,9);
     blk(20,5,'B'); blk(21,5); blk(22,5,'B'); blk(23,5); blk(24,5,'B');
-    pipe(28,2); pipe(38,3); pipe(46,4); pipe(57,4);
+    pipe(28,2); pipe(38,3); pipeIn(46,4, 57, 0); pipe(57,4);
     blk(77,9,'B'); blk(78,9,'M'); blk(79,9,'B');
     blk(80,5); blk(83,5);
     blk(84,9,'B'); blk(85,9,'F'); blk(86,9,'B'); blk(87,9,'B');
@@ -1914,6 +2009,10 @@ function buildLevel(lv) {
     blk(140,9,'B'); blk(141,9,'B'); blk(142,9,'B'); blk(143,9,'B');
     blk(148,9); blk(151,9,'B'); blk(159,9,'B'); blk(162,9,'B');
     blk(169,9,'B'); blk(172,9,'B');
+    coinRow(21, 23, 8); coinRow(33, 36, 12); coinArc(69, 9, 3);
+    coinRow(48, 52, 12); coinArc(87, 9, 3); coinRow(107, 110, 8);
+    coinRow(118, 120, 8); coinRow(140, 143, 8); coinArc(154, 9, 3);
+    coinRow(174, 178, 12);
     P(22); P(30); P(31); P(40); P(41);
     P(51); P(52); P(53); P(59); P(61); P(70); P(71);
     S(78); P(88); P(89);
@@ -1922,15 +2021,25 @@ function buildLevel(lv) {
     S(134); P(143); P(144); P(145); P(146);
     P(157); P(158); P(159); P(160); P(165); P(166);
     S(168); P(169); P(170);
+    SPK(64); SPK(103); SPK(137); FLP(93); FLP(148); CHP(38, 3); CHP(57, 4);
+    GLD(96, 7, 20); GLD(132, 6, 24); CAN(120, 11);
+    // a shuttle over the long flat run, and a lift to the high coin row
+    plat(112, 8, 'h', 6); coinRow(115, 119, 5);
+    plat(180, 11, 'v', -5); coinRow(182, 185, 6);
   } else if (variant === 1) {
-    gap(40,41); gap(74,76); gap(120,121);
+    /* Dropping off a pipe at run speed carries ~3 tiles, so a gap set right
+       after one leaves no room to land and re-jump: running forward was
+       unavoidable death and the only escape was a slow approach onto the pipe
+       roof. Every gap now has >=6 flat tiles of runway after the obstacle
+       before it (was 2 for the third gap, 4 for the first). */
+    gap(42,43); gap(74,76); gap(124,125);
     blk(12,9,'M'); blk(14,9); blk(15,9,'B'); blk(16,9);
     blk(20,9,'B'); blk(21,9); blk(22,9,'B');
     blk(21,5);
     pipe(26,3); pipe(34,4);
     blk(48,9); blk(49,9,'B'); blk(50,9,'M'); blk(51,9,'B'); blk(52,9);
     blk(50,5);
-    pipe(58,2); pipe(64,4);
+    pipeIn(58,2, 64, 1); pipe(64,4);
     blk(70,9,'B'); blk(71,9,'F'); blk(72,9,'B');
     blk(80,9); blk(81,9); blk(82,9);
     blk(81,5,'B');
@@ -1942,13 +2051,22 @@ function buildLevel(lv) {
     blk(127,5,'F');
     blk(136,9,'B'); blk(137,9); blk(138,9,'B');
     pipe(144,2);
+    coinRow(14, 16, 8); coinArc(42, 9, 3); coinRow(48, 52, 8);
+    coinRow(66, 69, 12); coinArc(75, 9, 4); coinRow(90, 92, 8);
+    coinRow(100, 104, 12); coinArc(124, 9, 3); coinRow(136, 138, 8);
+    coinRow(160, 166, 12);
     P(15); P(24); P(25); P(38); P(39);
     P(50); P(51); S(56); P(66); P(67);
     P(80); P(81); P(90); P(91); P(92);
     P(101); P(102); S(112);
     P(126); P(127); P(128); P(136); P(137);
-  } else {
-    gap(30,32); gap(60,62); gap(90,92); gap(130,131);
+    SPK(46); SPK(85); SPK(120); SPK(152); FLP(32); FLP(96); FLP(140); CHP(26, 3); CHP(108, 3);
+    GLD(78, 7, 22); GLD(130, 6, 18); CAN(102, 11);
+    plat(56, 8, 'h', 7); coinRow(59, 63, 5);
+    plat(170, 11, 'v', -5); coinRow(172, 176, 6);
+  } else if (variant === 2) {
+    // gap(130,131) sat 4 tiles past pipe(124,2); moved for a 6-tile runway
+    gap(30,32); gap(60,62); gap(90,92); gap(132,133);
     blk(14,5,'B'); blk(15,5); blk(16,5,'B');
     blk(14,9,'M'); blk(15,9); blk(16,9,'B');
     pipe(20,2);
@@ -1956,7 +2074,7 @@ function buildLevel(lv) {
     blk(27,9,'S');
     blk(34,9); blk(35,9,'B'); blk(36,9,'M'); blk(37,9,'B'); blk(38,9);
     blk(36,5);
-    pipe(44,4);
+    pipeIn(44,4, 70, 2);
     blk(52,5,'B'); blk(53,5); blk(54,5,'B'); blk(55,5);
     blk(53,9,'F');
     blk(64,9); blk(65,9,'B'); blk(66,9);
@@ -1971,26 +2089,822 @@ function buildLevel(lv) {
     pipe(124,2);
     blk(134,9,'B'); blk(135,9,'B'); blk(136,9,'B');
     blk(144,9); blk(147,9,'B');
+    coinRow(14, 16, 8); coinArc(31, 9, 4); coinRow(34, 38, 8);
+    coinArc(61, 9, 4); coinRow(64, 66, 8); coinArc(91, 9, 4);
+    coinRow(106, 108, 8); coinRow(116, 118, 8); coinArc(132, 9, 3);
+    coinRow(155, 162, 12);
     P(16); P(22); P(23); S(28); P(36); P(37);
     P(48); P(49); S(56); P(65); P(66);
     P(74); P(75); S(82);
     P(88); P(89); P(90); P(91); P(92);
     P(100); P(101); P(108); S(114); P(117); P(118);
     P(135); P(136);
+    SPK(40); SPK(72); SPK(112); SPK(150); FLP(50); FLP(104); FLP(128); CHP(20, 2); CHP(70, 3); CHP(98, 4);
+    GLD(84, 7, 20); GLD(142, 6, 22); CAN(112, 11);   // 126 sat six tiles from the pit at 132
+    plat(122, 8, 'h', 6); coinRow(125, 129, 5);
+    plat(160, 11, 'v', -5); coinRow(162, 166, 6);
+  } else if (variant === 3) {
+    /* ---------- layout 3: terraces ----------
+       The ground itself moves. Two step-up plateaus (surface row 11) and one high shelf
+       (row 9, reached in two steps), with the coin rows and the ? blocks on the upper
+       route. Drops off a terrace are safe -- you land on the floor below -- so the risk
+       here is being caught at the wrong height rather than falling into a hole; there
+       are only two real pits, both on flat ground with a long run-up. */
+    const terrace = (a, b, row) => {
+      for (let x = a; x <= b; x++) for (let y = row; y <= 12; y++) set(x, y, 'X');
+    };
+    const stepUp = (x, row) => { for (let y = row; y <= 12; y++) set(x, y, 'X'); };
+
+    /* Pit placement here is measured against a jump that starts high, not one that
+       starts on the floor. From a row-9 block (feet 144) the whole arc spans about
+       8 tiles before it crosses the floor plane again; off a terrace (feet 176) about
+       7. Both pits originally sat exactly that far past an elevated takeoff, so a hero
+       who jumped from the shelf came down inside the hole with no input that could
+       help. 14 tiles of plain floor now separate each pit from anything raised. */
+    gap(58, 60); gap(154, 156);
+
+    // first rise: one step, then a plateau carrying a coin row and a mushroom
+    stepUp(24, 12); terrace(25, 40, 11);
+    blk(28, 7, 'B'); blk(29, 7, 'M'); blk(30, 7, 'B');
+    coinRow(26, 32, 8); coinRow(34, 39, 9);
+    pipe(36, 2);
+
+    // back down to the floor, a pit, then a pipe you can enter
+    blk(42, 9, 'B'); blk(43, 9, '?'); blk(44, 9, 'B');
+    coinArc(59, 9, 4);
+    pipeIn(66, 3, 104, 0);   // 96 holds no pipe in this layout; the audit below snapped it
+
+    // second rise, taller: two steps to a high shelf with the flower on it
+    stepUp(76, 12); stepUp(77, 11); terrace(78, 96, 10);
+    blk(82, 6, 'B'); blk(83, 6, 'F'); blk(84, 6, 'B');
+    coinRow(79, 86, 7); coinRow(88, 95, 7);
+    blk(90, 6, '?');
+
+    // a long flat middle with the game's usual furniture, then the last terrace
+    pipe(104, 4);
+    blk(112, 9, 'B'); blk(113, 9, 'M'); blk(114, 9, 'B');
+    coinRow(112, 114, 8);
+    stepUp(124, 12); terrace(125, 140, 11);
+    blk(129, 7, 'B'); blk(130, 7, '?'); blk(131, 7, 'B');
+    coinRow(126, 138, 8);
+    pipe(136, 2);
+    coinArc(155, 9, 4);
+    blk(158, 9, 'B'); blk(159, 9, 'S'); blk(160, 9, 'B');
+    coinRow(168, 174, 12);
+
+    // patrols on both levels: the upper route is not a free ride
+    P(20); P(28); P(29); S(34); P(38); P(39);
+    P(50); P(51); S(64); P(70); P(71);
+    P(80); P(81); P(88); P(89); S(92);
+    P(108); P(109); P(118); P(126); P(127); S(134);
+    P(142); P(143); P(156); P(157);
+    SPK(52); SPK(86); SPK(120); SPK(162);
+    FLP(44); FLP(100); FLP(144);
+    CHP(36, 2); CHP(104, 4);
+    GLD(56, 6, 22); GLD(116, 7, 18); GLD(152, 6, 20);
+    CAN(110, 11);
+    plat(98, 8, 'h', 5); coinRow(100, 103, 4);
+    plat(178, 11, 'v', -5); coinRow(180, 184, 6);
+  } else {
+    /* ---------- layout 4: the lagoon ----------
+       Water from the start to column 172, then a dry shore that runs into the usual
+       stairs and flagpole, so the goal sequence is untouched. Underwater the hero
+       strokes instead of jumping and cannot stomp, so the obstacles are shaped for
+       swimming: coral pillars to weave through, no pits (there is a floor everywhere),
+       and coin trails that reward taking the tighter line. */
+    water = true;
+    waterTo = 172;
+    // coral: pillars from the floor and stalactites from the ceiling, never facing each
+    // other closely enough to close the channel -- 4 tiles of clear water always remain
+    const coral = (x, h) => { for (let y = 12; y > 12 - h; y--) set(x, y, 'B'); };
+    const spike = (x, h) => { for (let y = 2; y < 2 + h; y++) set(x, y, 'B'); };
+    const pairs = [[14, 4, 0], [26, 0, 4], [38, 5, 0], [52, 0, 5], [66, 4, 0],
+                   [80, 0, 4], [92, 5, 0], [106, 0, 5], [118, 4, 0], [132, 0, 4],
+                   [146, 5, 0], [158, 0, 4]];
+    for (const [x, up, down] of pairs) {
+      if (up) { coral(x, up); coral(x + 1, up - 1); }
+      if (down) { spike(x, down); spike(x + 1, down - 1); }
+    }
+    // a ceiling, so the water reads as enclosed rather than as sky
+    for (let x = 0; x <= waterTo; x++) { set(x, 0, 'X'); set(x, 1, 'X'); }
+    // coin trails through the gaps
+    for (const [x, up] of [[16, 7], [28, 9], [40, 6], [54, 9], [68, 7], [82, 9],
+                           [94, 6], [108, 9], [120, 7], [134, 9], [148, 6], [160, 9]])
+      coinRow(x, x + 3, up);
+    blk(46, 7, '?'); blk(74, 7, 'M'); blk(112, 7, '?'); blk(140, 7, 'F');
+    // the shore: three steps out of the water into the run-up to the flag
+    for (let x = waterTo + 1; x <= waterTo + 3; x++) for (let y = 12; y <= 12; y++) set(x, y, 'X');
+    FSH(20, 8, 24); FSH(34, 6, 20); FSH(48, 9, 18); FSH(62, 7, 26);
+    FSH(76, 8, 22); FSH(90, 6, 20); FSH(104, 9, 24); FSH(116, 7, 18);
+    FSH(130, 8, 22); FSH(144, 6, 20); FSH(156, 9, 20);
+    P(176); P(177); S(180);
   }
 
   // shared: stairs, flag, castle
+  // The descent must start at 189, immediately after the 8-tile peak at 188.
+  // Starting it at 190 left column 189 as a one-tile slot walled by 128px and
+  // 112px of stairs -- higher than any hero can jump, so falling in was an
+  // inescapable pit that only the timer could end.
   for (let i=0;i<8;i++) for (let j=0;j<=i;j++) set(181+i, 12-j, 'X');
-  for (let i=0;i<8;i++) for (let j=0;j<7-i;j++) set(190+i, 12-j, 'X');
+  for (let i=0;i<7;i++) for (let j=0;j<7-i;j++) set(189+i, 12-j, 'X');
   for (let y=3;y<=12;y++) set(198,y,'f');
   set(198,2,'b');
 
+  /* One layered prop list, back to front. Each prop carries its own parallax
+     factor; drawBackground just walks the list in order. (There used to be a
+     second `parallax` layer set drawn over these, which double-stamped hills
+     and clouds and washed the whole sky out.)
+     Placement is derived from a seeded LCG so a level looks identical every
+     time it is rebuilt after a death. */
+  // world is folded into the seed so scenery is re-arranged on each lap
+  let seed = ((lv * 2654435761) ^ (world * 40503)) % 2147483647;
+  if (seed <= 0) seed += 2147483646;
+  const rnd = () => (seed = seed * 48271 % 2147483647) / 2147483647;
+  const GROUND_Y = 13 * TILE;
   const decos = [];
-  for (let x = 8; x < W; x += 48) decos.push({ type:'cloud', x: x*TILE, y: 36 });
-  for (let x = 32; x < W; x += 48) decos.push({ type:'bush', x: x*TILE, y: 13*TILE - 12 });
-  [0, 10, 60, 100, 150].forEach(x => decos.push({ type:'hill', x: x*TILE, y: 13*TILE - 16 }));
+  /* Parallax changes how fast a layer scrolls, not how far apart its props sit
+     on screen, so `gap` is a plain world-pixel spacing. What it does change is
+     how much world a layer ever reveals: at px=0.2 the camera only uncovers a
+     fifth of the level's width, so a slow layer needs props over a short span
+     -- generating them across the whole level would leave the sky empty. */
+  const maxCam = W * TILE - LOGICAL_W;
+  const layer = (px, gap, jitter, place) => {
+    const end = maxCam * px + LOGICAL_W + 64;
+    for (let wx = -64; wx < end; wx += gap * (0.7 + rnd() * jitter)) place(Math.round(wx), px);
+  };
+  layer(0.2, 80, 0.5, (x, px) => decos.push({ spr: 'mountain', x, y: GROUND_Y - 18, px }));
+  layer(0.4, 96, 0.7, (x, px) => {
+    const big = rnd() < 0.45;
+    decos.push({ spr: big ? 'hillBig' : 'hill', x, y: GROUND_Y - (big ? 14 : 10), px });
+  });
+  layer(0.6, 112, 0.9, (x, px) => {
+    const big = rnd() < 0.4;
+    decos.push({ spr: big ? 'cloudBig' : 'cloud', x, y: 38 + Math.floor(rnd() * 44), px, drift: true });
+  });
+  layer(1, 96, 0.9, (x, px) => {
+    if (x < 5 * TILE || x > (W - 22) * TILE) return;
+    const big = rnd() < 0.35;
+    decos.push({ spr: big ? 'bushBig' : 'bush', x, y: GROUND_Y - (big ? 7 : 6), px });
+  });
 
-  return { map, W, H, enemies, decos, flagX: 198, castleX: 201, timeLimit: 400 };
+  const AIR_ROWS = [7, 8, 9, 10, 11, 12];
+  const airClear = (cx) => {
+    for (let x = cx - 2; x <= cx + 2; x++) {
+      if (x < 0 || x >= W) return false;
+      if (!solid(map[13][x])) return false;
+      for (const y of AIR_ROWS) if (solid(map[y][x])) return false;
+    }
+    return true;
+  };
+
+  /* ---------- per-world variation ----------
+     Deterministic from (world, lv): the same course is identical every visit, and
+     different from the same course one lap earlier. It only ADDS, and only things the
+     correction passes below can vet -- walkers (grounded, de-overlapped), spikes
+     (given open sky), block clusters (airspace over pits cleared) and lifts (optional
+     routes). Nothing here can create an unreachable ledge or an unfair pit, because
+     nothing here touches the ground row or the jump geometry. */
+  const lap = Math.min(world - 1, 7);
+  if (lap > 0 && water) {
+    /* The lagoon varies with its own vocabulary. Everything the dry-land branch adds is
+       either meaningless underwater (a hopper, a lift) or actively wrong (a walker
+       patrolling the seabed, a brick shelf floating in mid-channel). What scales here is
+       traffic and terrain: more fish, deeper coral, longer stalactites, and the coin
+       trails that mark the tighter line through them. */
+    let vs = ((world * 2246822519) ^ (lv * 3266489917) ^ 0x2f6b1d07) % 2147483647;
+    if (vs <= 0) vs += 2147483646;
+    const vrnd = () => (vs = vs * 48271 % 2147483647) / 2147483647;
+    const pick = (a, b) => a + Math.floor(vrnd() * (b - a + 1));
+
+    for (let i = 0; i < Math.min(6, 1 + lap); i++)
+      FSH(pick(18, waterTo - 14), pick(5, 10), 18 + Math.floor(vrnd() * 10));
+
+    /* Coral and stalactites keep the authored rhythm: the hand-placed pairs stand 12 to
+       14 columns apart, one from the floor then one from the ceiling, so the swimmer
+       weaves. Growth needs a buffer from anything already there, or the always-big bot's
+       original failure repeats: a variation stalactite landing four columns before an
+       authored coral left only rows 6-7 as common water, a 32px needle for a 30px hero.
+       A buffer of 8 clear columns closed that -- and also closed the growth loop itself:
+       18 contiguous columns never exist between pairs spaced 12-14 apart, so this ran for
+       every lap of every water world and placed nothing. Coral stayed frozen at world 1's
+       count while the fish count climbed, which is a balance bug hiding as a safety fix.
+       4 columns is enough buffer that one placement never sits close enough to an existing
+       obstacle to recreate the needle by itself (each piece is at most 4 rows tall, so it
+       cannot pinch the ~13-row channel alone), it fits the actual gaps, and the passage
+       invariant below still floods and trims anything that manages to pinch regardless --
+       this buffer only has to be reasonable, not airtight. */
+    const clearAround = (x, n) => {
+      for (let cx = x - n; cx <= x + 1 + n; cx++) {
+        if (cx < 2 || cx > waterTo) return false;
+        for (let y = 2; y <= 12; y++) if (map[y][cx] !== ' ' && map[y][cx] !== 'c') return false;
+      }
+      return true;
+    };
+    for (let i = 0, tries = 0; i < Math.min(4, 1 + Math.floor(lap / 2)) && tries < 60; tries++) {
+      const x = pick(22, waterTo - 18), h = pick(3, 4);
+      if (!clearAround(x, 4)) continue;
+      if (vrnd() < 0.5) { for (let y = 12; y > 12 - h; y--) { map[y][x] = 'B'; map[y][x + 1] = 'B'; } }
+      else { for (let y = 2; y < 2 + h; y++) { map[y][x] = 'B'; map[y][x + 1] = 'B'; } }
+      i++;
+    }
+    // extra trails, on the rows a swimmer actually cruises
+    for (let i = 0; i < 2 + lap; i++) {
+      const x = pick(16, waterTo - 10);
+      coinRow(x, x + 3, pick(4, 10));
+    }
+  } else if (lap > 0) {
+    let vs = ((world * 2246822519) ^ (lv * 3266489917) ^ 0x5bf03635) % 2147483647;
+    if (vs <= 0) vs += 2147483646;
+    const vrnd = () => (vs = vs * 48271 % 2147483647) / 2147483647;
+    const pick = (a, b) => a + Math.floor(vrnd() * (b - a + 1));
+
+    const noPitNear = (x, n) => {
+      /* Row 5 is out of reach of a jump from the ground -- but not of a jump from a
+         block or a pipe top, and the run-up to a pit often includes one. Measured:
+         three courses where a row-5 cluster capped a crossing that started from the
+         shelf beside the hole, and the hero fell in. So every cluster, at any height,
+         keeps clear of a pit's approach. */
+      /* Nine tiles, because that is what the measurements say: a running jump spans
+         about six tiles, the takeoff can be a tile or two before the lip, and BOLT's
+         91px jump puts its head at y=101 -- row 6, one row under a row-5 cluster. A
+         narrower window (four tiles) still lost one course in 126. */
+      /* 9 tiles covers a running jump that starts on the floor. A cluster is itself a
+         raised takeoff, and an arc that starts on top of one travels about 8 tiles
+         before it crosses the floor again -- so the window has to be wider than the
+         jump it enables. Measured on the terraced layout: a pit 10 tiles past a row-9
+         shelf still caught the hero every time. */
+      for (let cx = x - 14; cx <= x + n + 13; cx++) {
+        if (cx < 4 || cx >= W - 10) return false;
+        if (!solid(map[13][cx])) return false;
+      }
+      return true;
+    };
+
+    // extra walkers, thickening the course as the laps go on
+    const extraWalkers = Math.min(7, Math.round(lap * 1.1));
+    for (let i = 0; i < extraWalkers; i++) {
+      const x = pick(22, 188);
+      if (vrnd() < 0.75) P(x); else S(x);
+    }
+    // spiked walkers only from the third lap, and never more than three
+    /* Spiked walkers are only added where the sky is ALREADY clear. The placement
+       pass below can relocate one, but it is allowed to fall back to plain ground
+       when nothing suitable is near -- and with the extra clusters in play that
+       fallback started firing, which is exactly the unfair spot the rule exists to
+       prevent. Rejection sampling here means the pass never has to compromise. */
+    const extraSpikes = Math.min(3, Math.floor(lap / 2));
+    for (let i = 0, tries = 0; i < extraSpikes && tries < 60; tries++) {
+      const x = pick(30, 180);
+      if (!airClear(x)) continue;
+      SPK(x); i++;
+    }
+    // one hopper per two laps, for airspace pressure
+    for (let i = 0; i < Math.min(2, Math.floor(lap / 3)); i++) FLP(pick(40, 170));
+    // gliders own the air; a second cannon from the fourth lap owns the approach
+    for (let i = 0; i < Math.min(3, 1 + Math.floor(lap / 3)); i++) GLD(pick(30, 180), 6 + (vrnd() < 0.5 ? 0 : 1), 16 + Math.floor(vrnd() * 10));
+    if (lap >= 3) {
+      /* A cannon stands on a two-tile plinth, which is a wall in the run-up to a
+         pit: measured as one lost course (BOLT, world 5-1, dropped into the hole at
+         column 87). Same nine-tile clearance the clusters use. */
+      for (let tries = 0; tries < 30; tries++) {
+        const x = pick(40, 170);
+        if (!solid(map[13][x]) || map[12][x] !== ' ' || map[11][x] !== ' ') continue;
+        if (!noPitNear(x, 1)) continue;
+        CAN(x, 11);
+        break;
+      }
+    }
+
+    /* A block cluster, but only over open ground. The first cut placed them anywhere,
+       and three of ten worlds became impassable: a cluster at row 9 landing beside a
+       4-tile pipe caps the jump that climbs it, and one landing over a pit's run-up
+       caps the jump that crosses it. Same failure the pit and spike rules already
+       cover, so the cluster answers the same question before it is placed -- is the
+       ground under and around me clear, is there a pipe in reach, is anything below
+       me. Rejection sampling, so a crowded course simply gets fewer clusters. */
+    /* Where a cluster may go depends on which row it is on, and the difference is
+       measured, not guessed. A jump from the ground tops out with the hero's head at
+       y=117 (row 7), so:
+         row 9 (y=144) is inside every jump the course requires -- next to a pipe it
+           caps the climb, over a pit's run-up it caps the crossing. Three of ten
+           worlds became impassable before this check existed, so row 9 keeps the
+           strict test: clear ground for the whole run-up, no pipe in reach, nothing
+           underneath.
+         row 5 (y=80..96) is above that ceiling and cannot be bonked from the ground
+           at all, so it only has to avoid overwriting what is already there.
+       The first version applied the strict test to both, which rejected nearly every
+       candidate: world 2's terrain came out byte-identical to world 1's. */
+    const spanClear = (x, n, from) => {
+      for (let cx = x - 1; cx <= x + n; cx++) {
+        if (cx < 4 || cx >= W - 10) return false;
+        for (let y = from; y <= 12; y++) if (map[y][cx] !== ' ' && map[y][cx] !== 'c') return false;
+      }
+      return true;
+    };
+    const clusterOk = (x, n, row) => {
+      if (row === 5) return noPitNear(x, n) && spanClear(x, n, 5);
+      if (!noPitNear(x, n)) return false;
+      for (let cx = x - 3; cx <= x + n + 2; cx++) {
+        for (let y = 0; y < H - 2; y++) {
+          const c = map[y][cx];
+          if (c === 'T' || c === 'E' || c === 'P') return false;   // a pipe to climb
+        }
+      }
+      return spanClear(x, n, row);
+    };
+    const clusters = 2 + Math.floor(lap / 2);
+    for (let i = 0, tries = 0; i < clusters && tries < 80; tries++) {
+      const x = pick(24, 176), n = pick(2, 4), row = vrnd() < 0.45 ? 9 : 5;
+      if (!clusterOk(x, n, row)) continue;
+      for (let k = 0; k < n; k++) set(x + k, row, k === 1 && vrnd() < 0.35 ? '?' : 'B');
+      // coins where they can actually be collected: on top of a row-9 shelf, or at
+      // head height under a row-5 one
+      coinRow(x, x + n - 1, row === 9 ? 5 : 7);
+      i++;
+    }
+    /* And from the third lap, one more lift -- over solid ground only. A lift is
+       one-way solid from above, so one hanging over a pit is a trap for anyone who
+       crosses by running: they land on the deck mid-jump, walk off the far end and
+       drop into the hole. Found exactly that way, in world 14's third course. */
+    if (lap >= 2) {
+      for (let tries = 0; tries < 30; tries++) {
+        const x = pick(60, 150);
+        const kind = vrnd() < 0.6 ? 'h' : 'v';
+        const travel = kind === 'h' ? 6 : -5;
+        const span = kind === 'h' ? travel + 2 : 2;
+        if (!noPitNear(x, span)) continue;
+        plat(x, kind === 'h' ? 8 : 7, kind, travel);
+        coinRow(x + 1, x + 4, 4);
+        break;
+      }
+    }
+  }
+
+  /* ---------- a water course must stay swimmable ----------
+     A swimmer is 30px tall and cannot place itself to the pixel, so the channel needs
+     three clear rows, not two. The check is a flood fill over "places a hero can be":
+     cell (x,y) counts when rows y, y+1 and y+2 are all clear, and the fill moves up,
+     down, left and right from the spawn. If the shore is not in the flooded set the
+     channel is pinched somewhere, and stalactite tips are trimmed -- from the bottom
+     up, so the shape stays a stalactite -- until it opens.
+     This is the same trade the pit and spike passes make: authoring stays free to be
+     wrong, and the build refuses to ship the consequence. */
+  if (water) {
+    const FIT = 3;                                     // rows a 30px swimmer needs
+    const fits = (x, y) => {
+      for (let k = 0; k < FIT; k++) {
+        const c = (y + k < 0 || y + k >= H) ? 'X' : map[y + k][x];
+        if (solid(c)) return false;
+      }
+      return true;
+    };
+    const flood = () => {
+      const seen = new Set();
+      const key = (x, y) => y * W + x;
+      const start = [];
+      for (let y = 0; y <= 12; y++) if (fits(3, y)) start.push([3, y]);
+      const q = start.slice();
+      for (const [x, y] of start) seen.add(key(x, y));
+      while (q.length) {
+        const [x, y] = q.pop();
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= W || ny < 0 || ny > 12) continue;
+          if (seen.has(key(nx, ny)) || !fits(nx, ny)) continue;
+          seen.add(key(nx, ny)); q.push([nx, ny]);
+        }
+      }
+      return seen;
+    };
+    const shoreReached = (seen) => {
+      for (let y = 0; y <= 12; y++) if (seen.has(y * W + waterTo)) return true;
+      return false;
+    };
+    let seen = flood(), trims = 0;
+    while (!shoreReached(seen) && trims < 200) {
+      /* The pinch is the first column the fill never reached; open it by taking the
+         lowest ceiling tile in that column and its neighbour, which is what is
+         actually in the way. */
+      let px = -1;
+      for (let x = 4; x <= waterTo && px < 0; x++) {
+        let any = false;
+        for (let y = 0; y <= 12; y++) if (seen.has(y * W + x)) any = true;
+        if (!any) px = x;
+      }
+      if (px < 0) break;
+      /* Trim the TIP, not whatever brick comes first: a stalactite hangs from the
+         ceiling, so its tip is its lowest tile, and a coral pillar grows off the floor,
+         so its tip is its highest. Cutting the wrong end leaves a pillar floating in
+         mid-water, which reads as a bug rather than as terrain. */
+      let cut = false;
+      for (const x of [px, px - 1, px + 1]) {
+        if (x < 0 || x >= W || cut) continue;
+        let top = 1;                              // last row of the ceiling run
+        while (top + 1 <= 12 && map[top + 1][x] === 'B') top++;
+        let bot = 13;                             // first row of the floor run
+        while (bot - 1 >= 2 && map[bot - 1][x] === 'B') bot--;
+        if (top > 1) { map[top][x] = ' '; cut = true; }
+        else if (bot < 13) { map[bot][x] = ' '; cut = true; }
+      }
+      if (!cut) break;
+      trims++;
+      seen = flood();
+    }
+  }
+
+  /* ---------- no gap may be roofed ----------
+     A brick row at row 9 sits four tiles above the floor, which is inside the arc
+     of a running jump: crossing a pit under one, the hero bonks its head halfway
+     across, loses the rest of the jump and drops in. Measured on the 3-tile pit at
+     column 86 of course 1: clearing it needed a pixel-perfect takeoff, and being
+     10px early was fatal -- an unfair death that looked like a physics bug.
+     The airspace over every pit is therefore cleared after authoring, including
+     the lip on each side, where takeoff and landing happen. Doing it here rather
+     than by editing each collision means a later edit cannot reintroduce the trap.
+     A ? or powerup block is not deleted but walked left to the nearest free cell,
+     so the reward survives and the row still reads as one group. */
+  const airCols = new Set();
+  for (const x of gapCols) { airCols.add(x - 1); airCols.add(x); airCols.add(x + 1); }
+  for (const x of airCols) {
+    if (x < 0 || x >= W) continue;
+    for (const y of AIR_ROWS) {
+      const c = map[y][x];
+      if (c === ' ' || c === 'c') continue;   // coins are not solid: they stay
+      map[y][x] = ' ';
+      if (c === 'B' || c === 'X') continue;   // plain brick: just gone
+      for (let d = 2; d <= 14; d++) {         // reward block: relocate, do not lose
+        const nx = x - d;
+        if (nx < 1 || airCols.has(nx)) continue;
+        if (map[y][nx] === ' ') { map[y][nx] = c; break; }
+      }
+    }
+  }
+
+  /* ---------- one placement pass for every ground enemy ----------
+     Two rules apply to where a walker may start, and they were enforced in two
+     separate passes that each undid part of the other's work (a relocated spike
+     landed on a walker's column; a walker moved off a pit onto a column another
+     walker already held). One ordered pass, one column each:
+
+       1. It must stand on solid ground. Five walkers per layout were authored on
+          top of the holes they were meant to guard (P(70) over gap(69,70), P(88)
+          over gap(86,88), P(90..92) over gap(90,92)). A spawner over a hole wakes
+          when the camera arrives, drops straight in and is culled -- the encounter
+          the course was built around never happens, and what the player sees is an
+          enemy appearing and falling into a hole for no reason.
+       2. A SPIKO additionally needs open sky. It cannot be stomped, so the only
+          answer to one on flat ground is to jump over it, and a brick row overhead
+          caps the jump at 32px -- measured on course 2's spike at column 85, every
+          approach that took off before the ? group bonked and came down on the
+          spines. Where no such column exists nearby, plain ground still beats a
+          pit, so the search relaxes rather than giving up.
+
+     Pipe plants are exempt: they belong to a pipe mouth, which is solid by
+     definition and never shared. */
+  const usedCols = new Set();
+  for (const e of enemies) {
+    // pipe plants own a pipe mouth; gliders fly and cannons stand on their own plinth
+    if (e.type === 'chomp' || e.air) continue;
+    const cx0 = Math.round(e.x / TILE);
+    const inBounds = (x) => x > 1 && x < W - 6;
+    /* "Grounded" now means there is a surface here that a walker can stand on with room
+       above it -- not merely that row 13 is solid. Under a terrace, row 13 is solid and
+       the walker would be inside the rock. */
+    const grounded = (x) => {
+      if (!inBounds(x) || usedCols.has(x)) return false;
+      const sr = surfaceRow(x);
+      if (sr > 13) return false;                       // a pit
+      return !solid(map[sr - 1][x]) && !solid(map[sr - 2][x]);
+    };
+    const ideal = (x) => grounded(x) && (!e.spiky || airClear(x));
+    let cx = cx0;
+    if (!ideal(cx)) {
+      cx = -1;
+      for (let d = 1; d <= 26 && cx < 0; d++) {          // best fit first
+        if (ideal(cx0 + d)) cx = cx0 + d;
+        else if (ideal(cx0 - d)) cx = cx0 - d;
+      }
+      for (let d = 0; d <= 26 && cx < 0; d++) {          // then merely on ground
+        if (grounded(cx0 + d)) cx = cx0 + d;
+        else if (grounded(cx0 - d)) cx = cx0 - d;
+        /* A spike that had to settle for plain ground is standing under a ceiling,
+           which is the unfair spot this whole rule exists to prevent -- measured once
+           in 36 courses, on the densest late world. Rather than ship it, the hazard
+           degrades: it becomes an ordinary walker, which a capped jump can still
+           answer by stomping. A fair enemy in a tight spot beats an unfair one. */
+        if (cx >= 0 && e.spiky) {
+          e.spiky = false; e.type = 'puff';
+          e.h = 12; e.y = 13 * TILE - 12; e.py = e.y;
+          e.vx = -0.45 * pace;
+        }
+      }
+      if (cx < 0) cx = cx0;                              // nothing free: leave it
+    }
+    usedCols.add(cx);
+    e.x = cx * TILE;
+    e.y = surfaceY(cx, e.h);      // the surface here may not be the one it was authored on
+    e.py = e.y;
+  }
+
+  /* ---------- bonus-room exits must be real pipes ----------
+     The exit column is authored by hand, and three of the three were wrong on the
+     first pass (60, 68 and 56 hold no pipe at all), which sent every trip down the
+     fallback path: the player came back out of the pipe they went in, so the detour
+     bought nothing and looked like a bug. The column is now checked and, if it is
+     not a pipe top, snapped to the nearest one ahead of the entrance. */
+  for (const e of entries) {
+    const isTop = (x) => {
+      if (x < 0 || x >= W) return false;
+      for (let y = 0; y < H; y++) if (map[y][x] === 'T' || map[y][x] === 'E') return true;
+      return false;
+    };
+    if (isTop(e.exitTx) && e.exitTx > e.tx) continue;
+    let best = -1;
+    for (let x = e.tx + 4; x < W - 8 && best < 0; x++) if (isTop(x)) best = x;
+    if (best >= 0) e.exitTx = best;
+  }
+
+  /* ---------- checkpoint ----------
+     A course is 198 tiles. Losing a life sent the player back to tile 3, which
+     turns one mistake near the flag into three minutes of replay -- the single
+     biggest source of tedium left in the game. The halfway marker needs the same
+     footing the player will respawn onto: ground below, open sky above (so the
+     respawn cannot drop them onto a brick or inside a pipe), and clear of any
+     pit, so the search walks outward from the midpoint until it finds one. */
+  const spawnable = (cx) => {
+    for (let x = cx - 1; x <= cx + 2; x++) {
+      if (x < 4 || x >= W - 8) return false;
+      if (!solid(map[13][x])) return false;
+      for (let y = 6; y <= 12; y++) if (solid(map[y][x])) return false;
+    }
+    /* And no enemy may start within three tiles. Courses 2 and 3 put a walker
+       0-16px from the midpoint, so respawning would have dropped the player
+       straight into it -- a checkpoint that costs a life is worse than none. */
+    for (const e of enemies) if (!e.air && Math.abs(e.x - cx * TILE) < 3 * TILE) return false;
+    return true;
+  };
+  let checkX = 0;
+  for (let d = 0; d < 70 && !checkX; d++) {
+    if (spawnable(99 + d)) checkX = 99 + d;
+    else if (spawnable(99 - d)) checkX = 99 - d;
+  }
+  /* Last resort: with the extra walkers a later world adds, two courses had no column
+     that satisfied every condition, and the checkpoint silently did not exist. A
+     checkpoint is worth more than one walker, so the search relaxes to "ground and
+     open sky" and any enemy standing too close is retired. */
+  if (!checkX) {
+    const footing = (cx) => {
+      for (let x = cx - 1; x <= cx + 2; x++) {
+        if (x < 4 || x >= W - 8) return false;
+        if (!solid(map[13][x])) return false;
+        for (let y = 6; y <= 12; y++) if (solid(map[y][x])) return false;
+      }
+      return true;
+    };
+    for (let d = 0; d < 70 && !checkX; d++) {
+      if (footing(99 + d)) checkX = 99 + d;
+      else if (footing(99 - d)) checkX = 99 - d;
+    }
+    if (checkX) {
+      for (let i = enemies.length - 1; i >= 0; i--)
+        if (Math.abs(enemies[i].x - checkX * TILE) < 3 * TILE) enemies.splice(i, 1);
+    }
+  }
+
+  return { map, W, H, enemies, plats, decos, entries, water, waterTo,
+           flagX: 198, castleX: 201, timeLimit: water ? 500 : 400, checkX };
+}
+
+/* ---------- fortress ----------
+   The last course of every world. Shorter than a field course (128 tiles against
+   198) and built from three beats: a lava crossing, a fire-bar corridor, then the
+   bridge. It returns the same object shape a field course does, with the extra
+   pieces a fortress needs (`bars`, `boss`, `bridge`, `axeX`) and the field-only ones
+   empty, so every system that reads a level keeps working untouched. */
+function buildFortress(world) {
+  const W = 128, H = 15;
+  const map = Array.from({ length: H }, () => Array(W).fill(' '));
+  const set = (x, y, c) => { if (x >= 0 && x < W && y >= 0 && y < H) map[y][x] = c; };
+  const lap = Math.min(world - 1, 7);
+  let fs = ((world * 2654435761) ^ 0x1f2e3d4c) % 2147483647;
+  if (fs <= 0) fs += 2147483646;
+  const rnd = () => (fs = fs * 48271 % 2147483647) / 2147483647;
+  const pick = (a, b) => a + Math.floor(rnd() * (b - a + 1));
+
+  for (let x = 0; x < W; x++) { map[13][x] = 'X'; map[14][x] = 'X'; }
+  for (let x = 0; x < W; x++) { map[0][x] = 'X'; }          // fortress has a roof
+
+  /* Lava pools. Each is 2-3 wide with the floor cut away, and every pool gets a
+     block bridge above it: the crossing is a jump, not a coin flip, and a player who
+     misses the jump lands in lava rather than in an unreachable pit. */
+  const pools = [];
+  const poolAt = (x, w) => {
+    for (let i = 0; i < w; i++) { set(x + i, 13, 'L'); set(x + i, 14, 'L'); }
+    pools.push({ x, w });
+  };
+  /* Pools are 3 and 4 wide, not 2 and 3. A narrow pool with a small stone in it is
+     the worst of both: the stone is a 16px target that a walking jump overshoots by a
+     fraction (measured: the hero passed the deck's right edge 0.2px before its feet
+     reached the deck's height), and the pool is too narrow to read as a hazard. Wider
+     pools with a 2-tile deck give an 8-16px hop on each side -- inside the 29px a
+     standing jump reaches -- and look like something worth being careful about. */
+  poolAt(20, 3); poolAt(34, 4); poolAt(52, 3);
+  if (lap >= 2) poolAt(66, 4);
+  if (lap >= 4) poolAt(78, 3);
+
+  /* Reward shelves at row 9 only. The first cut also put block pairs at row 5, and
+     they were pure trap: a big hero standing on a row-9 shelf and jumping bonks a row-5
+     pair 48px above it, loses the jump and lands in the pool four tiles ahead -- traced
+     exactly that, MOCHI in the big form, worlds 3 through 5. Row 5 is unreachable
+     decoration in a fortress anyway; the vertical interest here comes from the pillars
+     and the bars. The shelves themselves also keep six tiles clear of every pool, so a
+     hop off the end of one cannot carry into lava. */
+  for (const x of [14, 28, 45, 58, 88]) { set(x, 9, 'B'); set(x + 1, 9, '?'); set(x + 2, 9, 'B'); }
+  set(45, 5, 'F');                                          // one flower, the fortress answer
+
+  /* Fire bars: a chain of links pivoting on a block. Placed on the corridor between
+     the last pool and the bridge, never over lava -- a hazard you cannot retreat from
+     is the kind of thing this game keeps deciding not to ship. */
+  /* One blaze per pool, offset so they never leap together, and a patrol between the
+     pools. The fortress had no enemies at all: three hazards and 10-14 tile gaps of
+     nothing between them. */
+  const enemies = [];
+  pools.forEach((p, i) => {
+    enemies.push({
+      type: 'blaze', x: (p.x + Math.floor(p.w / 2)) * TILE - 1, y: 14 * TILE,
+      w: 12, h: 16, vx: 0, vy: 0, t: (i * 47) % 200, air: true,
+      /* Airtime is 2*power/0.30 frames, so period has to stay well above it or the pool
+         is blocked more often than it is open. Measured: at lap 7 the first numbers
+         (period 94, power 8.7) put the flame in the air 62% of the time. Capped, the
+         duty cycle stays between 33% and 41% at every lap -- it gets faster, it never
+         gets closed. */
+      homeY: 14 * TILE, period: Math.max(132, 150 - lap * 4),
+      power: 7.4 + lap * 0.1, up: false
+    });
+  });
+  for (const x of [26, 44, 62, 82, 96]) {
+    if (map[13][x] !== 'X' || map[12][x] !== ' ') continue;
+    enemies.push({ type: 'shelly', x: x * TILE, y: 13 * TILE - 16, w: 12, h: 16,
+                   vx: -0.4 * (1 + lap * 0.06), vy: 0, t: 0 });
+  }
+
+  /* A stepping stone over every pool. Measured: a jump from a standstill reaches
+     29-31px and rises 76-91px, while a 2-tile pool needs 36px and a 3-tile pool 52px
+     -- so a player who stopped at the lip (which is exactly what the flame in the pool
+     asks them to do) could not cross at all. A one-tile deck 32px up splits the
+     crossing into two hops of 8-16px, both inside the standing reach, and keeps the
+     hazard: you still have to land on a stone over lava. */
+  const plats = [];
+  for (const p of pools) {
+    const cx = Math.round(p.x * TILE + (p.w * TILE) / 2 - 16);
+    plats.push({ kind: 'h', w: 32, h: 8, x: cx, y: 11 * TILE, x0: cx, y0: 11 * TILE,
+                 from: cx, to: cx, speed: 0, t: 0, dx: 0, dy: 0, deckWas: 11 * TILE });
+  }
+
+  const bars = [];
+  const barCount = 2 + Math.floor(lap / 2);
+  const barSpots = [40, 58, 72, 84, 94].slice(0, barCount);
+  for (const bx of barSpots) {
+    set(bx, 9, 'U');                                        // the pivot block
+    bars.push({ x: bx * TILE + 8, y: 9 * TILE + 8, len: 4 + (lap >= 3 ? 1 : 0),
+                a: rnd() * Math.PI * 2, spin: (rnd() < 0.5 ? 1 : -1) * 0.022 });
+  }
+
+  /* The bridge, the boss and the axe. The bridge is ordinary ground until the axe is
+     struck, at which point its tiles are removed and the boss falls with them. */
+  const bridgeX = 104, bridgeW = 10;
+  for (let i = 0; i < bridgeW; i++) { set(bridgeX + i, 13, 'X'); set(bridgeX + i, 14, 'L'); }
+  for (let x = bridgeX - 3; x < bridgeX; x++) { set(x, 13, 'X'); set(x, 14, 'X'); }
+  const axeX = bridgeX + bridgeW + 2;
+  set(axeX, 12, 'A');
+  const boss = {
+    x: (bridgeX + 4) * TILE, y: 13 * TILE - 30, w: 24, h: 30,
+    vx: -0.5 - lap * 0.05, vy: 0, t: 0, dead: false, hp: 5,
+    homeA: (bridgeX - 1) * TILE, homeB: (bridgeX + bridgeW - 2) * TILE,
+    fire: 90 - lap * 6
+  };
+  /* Pillars and lit windows, background only -- they never collide. Placed away from the
+     bars and the bridge so they never sit behind a hazard the player is reading. */
+  const decos = [];
+  let bay = 0;                       // x/11 is never an integer, so alternate on a counter
+  for (let x = 6; x < bridgeX - 6; x += 11, bay++) {
+    if (barSpots.some(b => Math.abs(b - x) < 3)) continue;
+    if (bay % 2 === 0) decos.push({ spr: 'pillar', x: x * TILE, y: 32, px: 0.72 });
+    else decos.push({ spr: 'window', x: x * TILE, y: 40, px: 0.72 });
+  }
+  return {
+    map, W, H, enemies, plats, decos, entries: [],
+    bars, boss, bridgeX, bridgeW, axeX,
+    fortress: true, flagX: 9999, castleX: 9999, checkX: 0, timeLimit: 300
+  };
+}
+
+/* ---------- bonus rooms ----------
+   A small closed cavern reached through a pipe: coins, one power-up, and an exit pipe
+   that puts the player further along the course than they went in. No enemies and no
+   pit in any of them, because the trade the player accepted was "leave the course for a
+   moment", not "take a second risk".
+
+   Three rooms, chosen by the entrance (`entry.room`), each with a different verb --
+   walk the gallery, climb the shaft, crawl the tunnel.
+
+   The geometry all comes from two numbers: the hero is 30px tall when big and jumps
+   75px. So a reward block sits FOUR rows above the surface you hit it from (three rows
+   leaves 2px of headroom -- the big hero cannot even start the jump), a climb of three
+   rows is comfortable, and a coin four to five rows up is collected in flight rather
+   than from a standing position. Every number below is one of those cases.
+
+   The two rows above the exit pipe's lip are cleared unconditionally at the end, because
+   a big hero standing on that lip occupies them: an early draft put a ? block directly
+   over the exit and the collision shoved the hero onto the block instead, so the exit
+   could not be stood on at all. Cheaper to enforce than to remember.
+*/
+function roomShell(W, H) {
+  const map = Array.from({ length: H }, () => Array(W).fill(' '));
+  for (let x = 0; x < W; x++) { map[13][x] = 'X'; map[14][x] = 'X'; map[0][x] = 'X'; map[1][x] = 'X'; }
+  for (let y = 0; y < H; y++) { map[y][0] = 'X'; map[y][W - 1] = 'X'; }
+  return map;
+}
+function roomFor(entry, world) {
+  const H = 15;
+  const which = ((entry && entry.room) | 0) % 3;
+  let W, map, exitTx, exitTy, exitBase = 13;
+  const set = (x, y, c) => { if (x >= 0 && x < W && y >= 0 && y < H) map[y][x] = c; };
+  const coins = (x0, x1, y) => { for (let x = x0; x <= x1; x++) if (map[y][x] === ' ') set(x, y, 'c'); };
+  const shelf = (x0, x1, y, c) => { for (let x = x0; x <= x1; x++) set(x, y, c || 'B'); };
+
+  if (which === 1) {
+    /* ---------- CHIMNEY ----------
+       Narrow and tall, and the exit is at the top: the room is a climb, so the coins sit
+       over every step rather than only over the last one -- the player is paid the whole
+       way up. The pipe stands on the top step, which is what `exitBase` is for; without
+       it the body would be extruded down to the floor and wall off the shaft.
+
+       Steps, not floating ledges. The first draft hung two shelves in the shaft, and the
+       small hero -- 16px in a 16px gap -- simply walked underneath the first one and ran
+       out of shaft, while the big hero was blocked by it and climbed. A room that only
+       the big form can leave is a trap, and the timer is still running.
+       So every step is solid from its top row down to the floor: there is no overhang to
+       walk under, in either form, and no jump in here needs to be aimed. */
+    W = 14; map = roomShell(W, H);
+    for (let y = 12; y <= 12; y++) shelf(3, 4, y, 'X');
+    for (let y = 10; y <= 12; y++) shelf(5, 6, y, 'X');
+    for (let y = 8; y <= 12; y++) shelf(7, 12, y, 'X');
+    exitTx = 11; exitTy = 6; exitBase = 8;
+    coins(1, 2, 11); coins(1, 2, 12);      // the floor
+    coins(3, 4, 10); coins(3, 4, 11);      // over the first step
+    coins(5, 6, 8); coins(5, 6, 9);        // over the second
+    coins(7, 10, 6); coins(7, 10, 7);      // over the third, clear of the pipe
+    /* One row up here, not two: the body sweep over a step is a trail, but four stacked
+       rows in the same four columns stops reading as a trail and starts reading as a
+       coin curtain. Checked on screen, not in the numbers. */
+    coins(7, 10, 4);                       // and a high row, taken in flight from the top
+    set(2, 9, '?');                        // four rows over the floor
+    set(5, 6, 'M');                        // four rows over the second step
+  } else if (which === 2) {
+    /* ---------- TUNNEL ----------
+       A stone mass with a two-tile crawlway under it. The big hero clears a 32px opening
+       by 2px and cannot jump while inside, so the room is a held breath rather than a
+       playground; the trail runs on row 12, the row a running hero of either size
+       already sweeps, so the crawl pays by the tile.
+       The power-ups are in the chamber at the far end and never in the tunnel. Growing
+       inside a 32px crawlway is a fine way to build a room the player cannot leave. */
+    W = 26; map = roomShell(W, H);
+    for (let y = 2; y <= 10; y++) shelf(4, 18, y, 'X');
+    exitTx = 22; exitTy = 11;
+    coins(5, 17, 12);                      // the crawl
+    coins(1, 3, 11); coins(1, 3, 12);      // the mouth
+    /* The column right of the tunnel mouth stays clear overhead. The first cut put the ?
+       block there, four rows up, and 18px of headroom is not enough to clear a 32px pipe
+       lip: the big hero came out of the crawl and was sealed into the chamber. */
+    set(20, 9, '?'); set(24, 9, 'M');
+    coins(22, 23, 8); coins(20, 24, 6);    // taken in flight, not from a standstill
+  } else {
+    /* ---------- VAULT ----------
+       Two galleries with a brick shelf under each. The high coin row is out of reach
+       from the floor (75px of jump against 128px of height), so the shelf is the way up
+       and the reward is a route rather than a handout.
+       The blocks used to be part of the shelves at row 10 -- three rows over the floor,
+       which is exactly the 2px case: a big hero standing under one could not jump into
+       it at all. They hang over the middle aisle now. */
+    W = 22; map = roomShell(W, H);
+    exitTx = 18; exitTy = 11;
+    for (const y of [5, 8]) { coins(3, 8, y); coins(12, 16, y); }
+    shelf(4, 7, 10); shelf(12, 15, 10);
+    set(9, 9, 'M'); set(10, 9, '?');
+  }
+
+  set(exitTx, exitTy, 'E'); set(exitTx + 1, exitTy, 'E');
+  for (let y = exitTy + 1; y < exitBase; y++) { set(exitTx, y, 'P'); set(exitTx + 1, y, 'P'); }
+  for (const y of [exitTy - 1, exitTy - 2]) {
+    if (map[y][exitTx] !== 'X') set(exitTx, y, ' ');
+    if (map[y][exitTx + 1] !== 'X') set(exitTx + 1, y, ' ');
+  }
+  return {
+    map, W, H, enemies: [], plats: [], decos: [], entries: [],
+    flagX: 9999, castleX: 9999, checkX: 0, timeLimit: 400,
+    room: true, roomId: which, exitTx, exitTy, exitTo: entry.exitTx
+  };
 }
 
 /* ---------- game state ---------- */
