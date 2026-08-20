@@ -2914,74 +2914,267 @@ const GAME = {
   world: 1, lv: 1,
   time: 400, timeF: 0, frame: 0,
   mario: null, camera: 0, level: null,
-  items: [], particles: [], popups: [],
+  items: [], particles: [], popups: [], bumps: [],
+  /* What the run was, not just what it scored. Reset with the run, never with a
+     course: dying halfway through world 3 should not erase the coins from world 1. */
+  run: { coins: 0, foes: 0, chain: 0, courses: 0 },
+  scores: [], scoreAt: -1,
   flagSlide: false, walkDone: false, clearTimer: 0,
   readyTimer: 0, combo: 0, paused: false,
   charIdx: 0, bgmOn: true, shake: 0,
-  balls: [], high: 0
+  balls: [], high: 0, theme: 0, fade: 0, fadeDir: 0,
+  camPrev: 0, alpha: 1,
+  hint: null, hintT: 0, taughtRun: false, taughtFire: false, taughtSpike: false,
+  bannerY: 0, castleFlagY: 0, warnedTime: false, afterDeath: false,
+  checkArmed: false, checkT: 0,
+  timeUp: false, overSel: 0, worldDone: false,
+  maxWorld: 1, startWorld: 1,
+  rebind: -1,          // index into REBINDABLE while the rebind screen is up
+  rebindMsg: '', rebindT: 0,
+  room: null, pipeAnim: null, taughtPipe: false,
+  collapse: 0, bossDown: false, taughtAxe: false
 };
 const COMBO_PTS = [100,200,400,800,1000,2000,4000,5000,8000];
+/* Furthest world reached, and the world the title screen is currently offering. The
+   score is deliberately NOT saved: unlocking a starting point is progress, carrying a
+   score across sessions would make the high score meaningless. */
+function loadProgress() {
+  try { return Math.max(1, Math.min(99, parseInt(localStorage.getItem('pipoWorld') || '1', 10) || 1)); }
+  catch (e) { return 1; }
+}
+function saveProgress(w) {
+  try { localStorage.setItem('pipoWorld', String(Math.max(1, Math.min(99, w)))); } catch (e) {}
+}
 function loadHigh() { try { return parseInt(localStorage.getItem('pipoHigh') || '0', 10) || 0; } catch (e) { return 0; } }
 function saveHigh(v) { try { localStorage.setItem('pipoHigh', String(v)); } catch (e) {} }
+/* ---------- the top five ----------
+   `pipoHigh` stays as it is -- an old install keeps its number, and the top bar keeps
+   reading it. The table is additive: score, where the run ended, which hero ran it, and
+   the two counts that say how the run was played. Every field is validated on load,
+   because a hand-edited or half-written entry should cost the table one row, not the
+   whole screen. */
+const SCORES_KEY = 'pipoScores', SCORES_MAX = 5;
+function loadScores() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SCORES_KEY) || '[]');
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter(e => e && typeof e.s === 'number' && isFinite(e.s) && e.s >= 0)
+      .map(e => ({
+        s: Math.max(0, Math.min(9999999, Math.round(e.s))),
+        w: Math.max(1, Math.min(99, e.w | 0)) || 1,
+        lv: Math.max(1, Math.min(4, e.lv | 0)) || 1,
+        hero: typeof e.hero === 'string' ? e.hero.slice(0, 6) : '',
+        coins: Math.max(0, Math.min(9999, e.coins | 0)),
+        foes: Math.max(0, Math.min(9999, e.foes | 0))
+      }))
+      .sort((a, b) => b.s - a.s)
+      .slice(0, SCORES_MAX);
+  } catch (e) { return []; }
+}
+function saveScores(list) {
+  try { localStorage.setItem(SCORES_KEY, JSON.stringify(list)); } catch (e) {}
+}
+/* Insert this run and report where it landed, or -1 if it did not place. A zero never
+   places: an accidental Enter on the title screen should not push a real run off the
+   bottom of the table. */
+function submitScore() {
+  if (GAME.score <= 0) return -1;
+  const entry = {
+    s: GAME.score, w: GAME.world, lv: GAME.lv, hero: CHARS[GAME.charIdx].name,
+    coins: GAME.run.coins, foes: GAME.run.foes
+  };
+  const list = GAME.scores.slice();
+  list.push(entry);
+  list.sort((a, b) => b.s - a.s);
+  const at = list.indexOf(entry);
+  GAME.scores = list.slice(0, SCORES_MAX);
+  saveScores(GAME.scores);
+  return at < SCORES_MAX ? at : -1;
+}
 GAME.high = loadHigh();
+GAME.scores = loadScores();
+GAME.maxWorld = loadProgress();
+GAME.startWorld = GAME.maxWorld;
 
 function resetMario() {
   const ch = CHARS[GAME.charIdx];
+  const spawnTile = (GAME.checkArmed && GAME.level && GAME.level.checkX) ? GAME.level.checkX : 3;
   GAME.mario = {
-    x: 3*TILE, y: 13*TILE - 16, w: 12, h: 16,
+    x: spawnTile*TILE, y: 13*TILE - 16, w: 12, h: 16,
     vx: 0, vy: 0, onGround: true, facing: 1,
-    big: false, fire: false, invuln: 0, growT: 0,
+    big: false, fire: false, invuln: 0,
     dead: false, deathTimer: 0, star: 0,
-    jumpHeld: false, jumpBuf: 0, coyote: 0,
-    state: 'idle', animT: 0, sq: 1
+    jumpBuf: 0, coyote: 0,
+    plat: null,          // the lift being ridden, if any
+    state: 'stand', animT: 0, sq: 1
   };
+  snapMario();   // no interpolation across a spawn
 }
-function startGame() {
-  GAME.score = 0; GAME.coins = 0; GAME.lives = 3; GAME.world = 1; GAME.lv = 1;
-  BGM.stop();
+function snapAll(list) {
+  for (let i = 0; i < list.length; i++) { const e = list[i]; e.px = e.x; e.py = e.y; }
+}
+/* collapse the interpolation gap: use after any deliberate teleport */
+function snapMario() {
+  const m = GAME.mario;
+  if (m) { m.px = m.x; m.py = m.y; }
+  GAME.camPrev = GAME.camera;
+}
+/* Continue: same world, fresh lives, score back to zero. The high score has
+   already been banked by the game-over transition, so a continued run cannot
+   inflate it. */
+function continueGame() {
+  GAME.score = 0; GAME.coins = 0; GAME.lives = 3; GAME.lv = 1;
+  GAME.run = { coins: 0, foes: 0, chain: 0, courses: 0 };
+  GAME.afterDeath = false; GAME.overSel = 0;
   startLevel();
 }
-function startLevel() {
-  GAME.level = buildLevel(GAME.lv);
-  GAME.items = []; GAME.particles = []; GAME.popups = [];
+function startGame() {
+  GAME.score = 0; GAME.coins = 0; GAME.lives = 3;
+  GAME.run = { coins: 0, foes: 0, chain: 0, courses: 0 };
+  GAME.scoreAt = -1;
+  GAME.world = Math.max(1, Math.min(GAME.maxWorld, GAME.startWorld)); GAME.lv = 1;
+  GAME.afterDeath = false; GAME.overSel = 0; GAME.worldDone = false;
+  BGM.stop();
+  saveSettings(); // remember the hero the player just picked
+  GAME.taughtRun = false; GAME.taughtFire = false; GAME.taughtSpike = false;
+  GAME.taughtPipe = false; GAME.taughtAxe = false;
+  startLevel();
+}
+function startLevel(keepCheckpoint) {
+  /* Course 4 of every world is its fortress. buildFortress returns the same shape a
+     field course does, so nothing downstream needs to know which it got. */
+  GAME.level = GAME.lv === 4 ? buildFortress(GAME.world) : buildLevel(GAME.lv, GAME.world);
+  // a death returns to the marker; a new course always starts at the beginning
+  if (!keepCheckpoint) { GAME.checkArmed = false; GAME.checkT = 0; }
+  /* A death inside a bonus room rebuilds the course, so the room state has to go
+     with it -- otherwise the next life starts holding a reference to a cavern. */
+  GAME.room = null; GAME.pipeAnim = null;
+  GAME.collapse = 0; GAME.bossDown = false;
+  /* The rotation is over the three COURSE palettes. It used to read
+     `% THEMES.length`, which happened to give the same answer only because lv never
+     exceeds 3 -- appending the cavern palette made that a coincidence rather than a
+     rule, so the bound is now explicit. */
+  /* Offset by world as well as course: world 1 runs MEADOW/SUNSET/MIDNIGHT, world 2
+     opens on SUNSET, world 3 on MIDNIGHT. Three layouts times three palettes reads
+     as far more variety than three layouts always dressed the same way. */
+  /* A course type that has its own palette uses it; only the three field palettes
+     rotate. The lagoon palette was written and then never selected -- the water course
+     came out looking like an ordinary sunset field. */
+  GAME.theme = GAME.lv === 4 ? FORTRESS_THEME
+             : GAME.level.water ? LAGOON_THEME
+             : (GAME.lv - 1 + (GAME.world - 1)) % COURSE_THEMES;
+  GAME.items = []; GAME.particles = []; GAME.popups = []; GAME.bumps = [];
   GAME.balls = [];
+  GAME.fade = 1; GAME.fadeDir = -1; // fade up from black into the new course
   GAME.time = GAME.level.timeLimit; GAME.timeF = 0; GAME.combo = 0;
   resetMario();
-  GAME.camera = 0;
+  // camera derived from the spawn instead of pinned to 0, which would have shown
+  // the course start for a frame before snapping to a checkpoint respawn
+  GAME.camera = Math.max(0, Math.min(GAME.mario.x - CAM_LEAD, GAME.level.W * TILE - LOGICAL_W));
+  GAME.camPrev = GAME.camera; GAME.alpha = 1;
   GAME.flagSlide = false; GAME.walkDone = false; GAME.clearTimer = 0;
+  GAME.bannerY = 0; GAME.castleFlagY = 0; GAME.warnedTime = false;
   GAME.readyTimer = 0;
+  GAME.hint = null; GAME.hintT = 0;
+  GAME.timeUp = false;
   GAME.state = 'ready';
+  BGM.select(GAME.theme);   // each theme has its own track
   if (GAME.bgmOn) BGM.start();
 }
 function nextLevel() {
+  // 3 courses per world, matching the 3 layouts and 3 themes. It used to run to
+  // 1-4, which replayed 1-1's layout and theme, so x-3 -> x-4 -> (x+1)-1 gave
+  // three identical-looking courses back to back.
   GAME.lv += 1;
   if (GAME.lv > 4) { GAME.lv = 1; GAME.world += 1; }
+  GAME.worldDone = false;
+  /* Bank the best score at every course boundary, not only on game over. A run
+     that ends by closing the tab used to leave nothing behind. */
+  GAME.run.courses++;
+  if (GAME.score > GAME.high) { GAME.high = GAME.score; saveHigh(GAME.high); }
+  // and the furthest world, so the next session can start from it
+  if (GAME.world > GAME.maxWorld) {
+    GAME.maxWorld = GAME.world;
+    GAME.startWorld = GAME.world;
+    saveProgress(GAME.maxWorld);
+  }
   startLevel();
 }
 
 function onKeyPress(k) {
-  if (k === 'mute') { Sound.muted = !Sound.muted; return; }
+  /* While the rebind screen is up it swallows everything: the raw key is captured by the
+     keydown handler before this point, so anything reaching here is the escape hatch. */
+  if (GAME.rebind >= 0) return;
+  if (k === 'mute') { Sound.muted = !Sound.muted; saveSettings(); return; }
   if (k === 'bgm') {
     GAME.bgmOn = !GAME.bgmOn;
     if (GAME.bgmOn && (GAME.state === 'play' || GAME.state === 'ready' || GAME.state === 'clear')) BGM.start();
     else BGM.stop();
+    saveSettings();
     return;
   }
   if (GAME.state === 'title') {
-    if (k === 'left') GAME.charIdx = (GAME.charIdx + CHARS.length - 1) % CHARS.length;
-    else if (k === 'right') GAME.charIdx = (GAME.charIdx + 1) % CHARS.length;
+    if (k === 'left') { GAME.charIdx = (GAME.charIdx + CHARS.length - 1) % CHARS.length; Sound.kick(); }
+    else if (k === 'right') { GAME.charIdx = (GAME.charIdx + 1) % CHARS.length; Sound.kick(); }
+    /* DOWN cycles the starting world through what has been unlocked. It is the one
+       control the title screen had spare, and it already means "go in" on a pipe. */
+    else if (k === 'down' && GAME.maxWorld > 1) {
+      GAME.startWorld = GAME.startWorld >= GAME.maxWorld ? 1 : GAME.startWorld + 1;
+      Sound.kick();
+    }
     if (k === 'start' || k === 'jump') startGame();
     return;
   }
-  if (GAME.state === 'gameover') { if (k === 'start') { BGM.stop(); GAME.state = 'title'; } return; }
-  if (k === 'pause' && GAME.state === 'play') GAME.paused = !GAME.paused;
-  if (k === 'jump' && GAME.mario && !GAME.mario.dead) GAME.mario.jumpBuf = 8;
-  if (k === 'fire' && GAME.state === 'play' && GAME.mario && !GAME.mario.dead) {
+  if (GAME.state === 'gameover') {
+    if (k === 'left' || k === 'right') {   // ArrowUp is 'jump', so it confirms
+      GAME.overSel = 1 - GAME.overSel; Sound.kick();
+    } else if (k === 'start' || k === 'jump') {
+      BGM.stop();
+      if (GAME.overSel === 0) continueGame(); else GAME.state = 'title';
+    }
+    return;
+  }
+  /* A course could only be left by dying three times. Quitting is gated behind
+     the pause screen, where it is listed, so it cannot be hit by accident. */
+  if (k === 'quit' && GAME.paused && GAME.state === 'play') {
+    GAME.paused = false; BGM.stop();
+    if (GAME.score > GAME.high) { GAME.high = GAME.score; saveHigh(GAME.high); }
+    /* This used to only bank `pipoHigh`, which the title's corner reads, and never touch
+       the ranking table -- a run good enough for the top five that ended by quitting
+       instead of dying vanished from the table forever, while the corner kept the number
+       with no context to back it (the title only prints the world/hero once the table's
+       top row matches GAME.high). Quitting is one of exactly two ways a run ends, so it
+       submits the same as death does; there is just no card to show it on. */
+    submitScore();
+    GAME.state = 'title';
+    return;
+  }
+  if (k === 'pause' && GAME.state === 'play') {
+    GAME.paused = !GAME.paused;
+    // music kept playing straight through a pause
+    if (GAME.paused) BGM.stop(); else if (GAME.bgmOn) BGM.start();
+    return;
+  }
+  /* Everything below is live-play input. It used to be reachable from every
+     other state: jump buffered a hop during READY, the clear walk and the pause
+     screen (so the hero leapt the instant control returned), and fire actually
+     spawned a fireball while paused. `live` is the one gate. */
+  const live = GAME.state === 'play' && !GAME.paused && GAME.mario && !GAME.mario.dead;
+  if (!live) return;
+  if (k === 'jump') GAME.mario.jumpBuf = 8;
+  if (k === 'fire') {
     const m = GAME.mario;
     if (m.fire && GAME.balls.length < 2) {
+      const by = m.y + (m.big ? 10 : 5);
+      let bx = m.facing === 1 ? m.x + m.w : m.x - 8;
+      // Firing while pressed against a wall used to spawn the ball inside solid
+      // tiles, where it died on its first step: the shot and the sound were
+      // spent for nothing. Fall back to Mario's own body, which is always clear.
+      const inWall = (px, py) => solid(cellAt(Math.floor(px / TILE), Math.floor(py / TILE)));
+      if (inWall(bx + 4, by + 4)) bx = m.x + m.w / 2 - 4;
       GAME.balls.push({
-        x: m.facing === 1 ? m.x + m.w : m.x - 8,
-        y: m.y + (m.big ? 10 : 5), w: 8, h: 8,
+        x: bx, y: by, w: 8, h: 8,
         vx: m.facing * 4.5, vy: 0, spin: 0
       });
       Sound.fireball();
