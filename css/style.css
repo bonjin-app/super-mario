@@ -1,19 +1,176 @@
+:root {
+  --bg: #0d1020;
+  --panel: #151a2e;
+  --line: #26304c;
+  --ink: #e6ecff;
+  --dim: #8c9bc4;
+  --gold: #ffd84a;
+}
+* { box-sizing: border-box; }
 html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: #1a1a1a;
+  background: var(--bg);
+  color: var(--ink);
   overflow: hidden;
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* stop double-tap zoom and text selection, which make touch play unusable */
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
+
+/* Rows: chrome takes what it needs, the playfield takes the rest. fit() measures
+   #wrap, so the canvas is always sized to whatever this layout leaves it. */
+#shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+  height: 100dvh;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px max(14px, env(safe-area-inset-left));
+  background: linear-gradient(180deg, #1b2138, #141827);
+  border-bottom: 1px solid var(--line);
+  min-height: 40px;
+}
+#topbar .brand {
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--gold);
+  text-shadow: 0 1px 0 #000;
+}
+#topbar .sub { color: var(--dim); font-size: 12px; }
+#topbar .spacer { flex: 1; }
+#topbar .tip { color: var(--dim); font-size: 12px; white-space: nowrap; }
+#topbar .status {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  color: var(--dim);
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+#topbar .status #stBest { color: var(--gold); }
+@media (max-width: 860px) { #topbar .status #stAudio { display: none; } }
+@media (max-width: 700px) { #topbar .status #stHero { display: none; } }
+@media (max-width: 520px) { #topbar .status { display: none; } }
+
+/* The game box: the middle grid row, and the box fit() measures. It stays
+   transparent -- the frame belongs to #stage, which is exactly the size of the
+   playfield. Painting the frame here instead made the leftover space (a tall
+   window cannot be filled by a 4:3 view) look like a big empty panel. */
 #wrap {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100vh;
+  min-height: 0;          /* lets the 1fr row actually shrink */
+  padding: 10px;
+  overflow: hidden;
+}
+#stage {
+  display: flex;
+  line-height: 0;         /* no inline descender gap under the canvas */
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px #2a3352, 0 14px 44px rgba(0, 0, 0, 0.6);
 }
 #screen {
-  image-rendering: pixelated;
+  /* crisp-edges first, pixelated last: the last supported value wins, and
+     pixelated is the one that keeps hard edges at fractional scales */
   image-rendering: crisp-edges;
-  background: #5C94FC;
-  box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+  image-rendering: pixelated;
+  display: block;
+  background: #5c94fc;
+  border-radius: 4px;
+}
+
+#botbar {
+  padding: 8px max(14px, env(safe-area-inset-left)) max(10px, env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, #141827, #1b2138);
+  border-top: 1px solid var(--line);
+}
+#keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+#keys li { display: flex; align-items: center; gap: 5px; }
+#keys b { font-weight: 600; color: var(--ink); }
+#keys i { font-style: normal; color: var(--dim); font-size: 11px; }
+kbd {
+  display: inline-block;
+  min-width: 20px;
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: #202742;
+  color: var(--gold);
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+#powerups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  color: var(--dim);
+  font-size: 11px;
+}
+#powerups b { color: var(--ink); font-weight: 600; }
+
+/* ---------- responsive ----------
+   The playfield is a fixed 320x240, so a very wide or very tall box always has
+   space the game cannot use. Rather than stretching the game into it (which would
+   change how much course is visible, i.e. the difficulty), the chrome takes it:
+   on wide screens the key legend becomes a side column beside the playfield. */
+@media (min-width: 1100px) and (min-height: 560px) {
+  #shell {
+    grid-template-rows: auto 1fr;
+    grid-template-columns: 1fr auto;
+    grid-template-areas: 'top top' 'game side';
+  }
+  #topbar { grid-area: top; }
+  #wrap   { grid-area: game; }
+  #botbar {
+    grid-area: side;
+    width: 262px;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    overflow-y: auto;
+    background: linear-gradient(180deg, #161b2e, #11152400);
+  }
+  #keys { flex-direction: column; gap: 7px; margin-bottom: 12px; }
+  #powerups { flex-direction: column; gap: 5px; }
+  #topbar .tip { display: none; }   /* the side column already says it */
+}
+
+/* Short viewports: the playfield wins, the reference material folds away. */
+@media (max-height: 620px) {
+  #powerups { display: none; }
+  #keys { gap: 4px 12px; }
+  #keys i { display: none; }
+}
+@media (max-height: 520px) {
+  #botbar { display: none; }
+  #topbar { min-height: 32px; padding-block: 5px; }
+  #topbar .sub { display: none; }
+}
+@media (max-width: 720px) {
+  #topbar .sub { display: none; }
+}
+@media (max-width: 560px) {
+  #topbar .tip { display: none; }
+  #keys i { display: none; }
+  #powerups { display: none; }
 }
