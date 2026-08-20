@@ -3183,37 +3183,81 @@ function onKeyPress(k) {
 }
 
 /* ---------- tile physics ---------- */
-function solid(c) { return c === 'X' || c === 'B' || c === 'M' || c === 'F' || c === 'S' || c === 'U' || c === 'T' || c === 'P' || c === 'f' || c === '?'; }
+function solid(c) {
+  return c === 'X' || c === 'B' || c === 'M' || c === 'F' || c === 'S' || c === 'U' ||
+         c === 'T' || c === 'P' || c === 'f' || c === '?' || c === 'E';
+}
+/* Lava is not solid -- you fall into it -- but touching it kills outright, star or
+   not, the same rule a pit follows. */
+function deadly(c) { return c === 'L'; }
+function lavaUnder(m) {
+  const y0 = Math.floor((m.y + m.h - 2) / TILE), y1 = Math.floor((m.y + m.h + 1) / TILE);
+  const x0 = Math.floor((m.x + 2) / TILE), x1 = Math.floor((m.x + m.w - 2) / TILE);
+  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) if (deadly(cellAt(tx, ty))) return true;
+  return false;
+}
 function cellAt(tx, ty) {
   const L = GAME.level;
   if (tx < 0 || tx >= L.W) return 'X';
   if (ty < 0 || ty >= L.H) return ' ';
   return L.map[ty][tx];
 }
+const EPS = 0.01;
+/* Resolve one axis of movement against the tile map.
+   Two rules matter here and both used to be broken:
+   1. The tile range is snapshotted BEFORE scanning. Previously the loop bound
+      was `tx <= Math.floor((ent.x + ent.w - EPS) / TILE)`, recomputed every
+      iteration from an `ent.x` the body itself reassigned. A left-moving body
+      overlapping the ground row got pushed one tile right, which raised the
+      bound, which matched the next ground tile, and so on -- and since cellAt()
+      reports out-of-bounds columns as solid, the walk past the level edge never
+      ended. Any enemy or item falling into a pit while drifting left could hang
+      the whole game in a single frame.
+   2. We resolve against the NEAREST blocking tile along the direction of
+      travel. The old code kept overwriting the position with whatever tile the
+      scan happened to visit last, which is not necessarily the one that was
+      actually hit.
+   EPS also keeps a body flush against a tile edge from claiming the next tile
+   over, which otherwise snags entities on every tile seam. */
 function collideAxis(ent, dx, dy) {
   ent.x += dx;
   let hitX = false;
   {
-    const top = ent.y + 1, bot = ent.y + ent.h - 1;
-    for (let ty = Math.floor(top / TILE); ty <= Math.floor(bot / TILE); ty++) {
-      for (let tx = Math.floor(ent.x / TILE); tx <= Math.floor((ent.x + ent.w) / TILE); tx++) {
+    const tyA = Math.floor((ent.y + 1) / TILE);
+    const tyB = Math.floor((ent.y + ent.h - 1) / TILE);
+    const txA = Math.floor(ent.x / TILE);
+    const txB = Math.floor((ent.x + ent.w - EPS) / TILE);
+    let blocker = null;
+    for (let ty = tyA; ty <= tyB; ty++) {
+      for (let tx = txA; tx <= txB; tx++) {
         if (!solid(cellAt(tx, ty))) continue;
-        if (dx > 0) ent.x = tx * TILE - ent.w - 0.01;
-        else if (dx < 0) ent.x = (tx + 1) * TILE + 0.01;
         hitX = true;
+        if (blocker === null || (dx > 0 ? tx < blocker : tx > blocker)) blocker = tx;
       }
+    }
+    if (blocker !== null) {
+      if (dx > 0) ent.x = blocker * TILE - ent.w - EPS;
+      else if (dx < 0) ent.x = (blocker + 1) * TILE + EPS;
     }
   }
   ent.y += dy;
   let hitY = false, ceil = false, floor = false;
   {
-    for (let tx = Math.floor((ent.x + 1) / TILE); tx <= Math.floor((ent.x + ent.w - 1) / TILE); tx++) {
-      for (let ty = Math.floor(ent.y / TILE); ty <= Math.floor((ent.y + ent.h) / TILE); ty++) {
+    const txA = Math.floor((ent.x + 1) / TILE);
+    const txB = Math.floor((ent.x + ent.w - 1) / TILE);
+    const tyA = Math.floor(ent.y / TILE);
+    const tyB = Math.floor((ent.y + ent.h - EPS) / TILE);
+    let blocker = null;
+    for (let tx = txA; tx <= txB; tx++) {
+      for (let ty = tyA; ty <= tyB; ty++) {
         if (!solid(cellAt(tx, ty))) continue;
-        if (dy > 0) { ent.y = ty * TILE - ent.h - 0.01; floor = true; }
-        else if (dy < 0) { ent.y = (ty + 1) * TILE + 0.01; ceil = true; }
         hitY = true;
+        if (blocker === null || (dy > 0 ? ty < blocker : ty > blocker)) blocker = ty;
       }
+    }
+    if (blocker !== null) {
+      if (dy > 0) { ent.y = blocker * TILE - ent.h - EPS; floor = true; }
+      else if (dy < 0) { ent.y = (blocker + 1) * TILE + EPS; ceil = true; }
     }
   }
   return { hitX, hitY, ceil, floor };
@@ -3223,6 +3267,10 @@ function collideAxis(ent, dx, dy) {
 function hitBlock(tx, ty) {
   const L = GAME.level;
   const c = L.map[ty][tx];
+  // visible recoil on the tile that was punched
+  if (c === '?' || c === 'M' || c === 'F' || c === 'S' || (c === 'B' && !GAME.mario.big)) {
+    if (!GAME.bumps.some(b => b.tx === tx && b.ty === ty)) GAME.bumps.push({ tx, ty, t: 0 });
+  }
   if (c === '?' || c === 'M' || c === 'F' || c === 'S') {
     L.map[ty][tx] = 'U';
     if (c === 'M') spawnItem('mushroom', tx, ty);
@@ -3235,7 +3283,7 @@ function hitBlock(tx, ty) {
       L.map[ty][tx] = ' ';
       Sound.breakB();
       GAME.score += 50;
-      GAME.shake = 3;
+      if (!REDUCED) GAME.shake = 3;
       for (let i = 0; i < 4; i++) {
         GAME.particles.push({
           kind: 'debris',
@@ -3247,8 +3295,10 @@ function hitBlock(tx, ty) {
     } else Sound.bump();
   }
 }
-function coinBurst(tx, ty) {
+/* one coin's worth of score, coin count and the 100-coin 1UP */
+function takeCoin(tx, ty) {
   GAME.coins++;
+  GAME.run.coins++;      // the running total; GAME.coins wraps at 100 for the 1UP
   if (GAME.coins >= 100) {
     GAME.coins -= 100;
     GAME.lives++;
@@ -3257,6 +3307,29 @@ function coinBurst(tx, ty) {
   }
   GAME.score += 200;
   Sound.coin();
+}
+/* loose 'c' cells picked up by walking through them */
+function collectCoins(m) {
+  const tx0 = Math.floor(m.x / TILE), tx1 = Math.floor((m.x + m.w - EPS) / TILE);
+  const ty0 = Math.floor(m.y / TILE), ty1 = Math.floor((m.y + m.h - EPS) / TILE);
+  const L = GAME.level;
+  for (let ty = ty0; ty <= ty1; ty++) {
+    if (ty < 0 || ty >= L.H) continue;
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (tx < 0 || tx >= L.W) continue;
+      if (L.map[ty][tx] !== 'c') continue;
+      L.map[ty][tx] = ' ';
+      takeCoin(tx, ty);
+      GAME.items.push({ type:'coinAnim', x: tx*TILE + 2, y: ty*TILE - 4, t: 0 });
+      for (let i = 0; i < 3; i++) GAME.particles.push({
+        kind: 'spark', x: tx*TILE + 8, y: ty*TILE + 6,
+        vx: (Math.random()-0.5)*1.8, vy: -Math.random()*1.4 - 0.3, t: 0
+      });
+    }
+  }
+}
+function coinBurst(tx, ty) {
+  takeCoin(tx, ty);
   GAME.items.push({ type:'coinAnim', x: tx*TILE + 2, y: ty*TILE - 8, t: 0 });
   GAME.popups.push({ x: tx*TILE, y: ty*TILE - 10, text:'200', t: 0 });
   for (let i = 0; i < 5; i++) GAME.particles.push({
@@ -3265,9 +3338,11 @@ function coinBurst(tx, ty) {
   });
 }
 function spawnItem(kind, tx, ty) {
+  Sound.emerge();
   GAME.items.push({
     type: kind, x: tx*TILE + 2, y: ty*TILE, w: 12, h: 12,
-    vx: kind === 'mushroom' ? 1 : 0, vy: 0, rising: true
+    vx: kind === 'flower' ? 0 : 1.2, vy: 0, rising: true,
+    targetY: ty*TILE - 12 // rest just above the block it came from
   });
 }
 function dust(x, y, n) {
@@ -3277,14 +3352,31 @@ function dust(x, y, n) {
   });
 }
 
+/* ---------- entity retirement ----------
+   The camera never scrolls backward and the player is clamped to its left edge,
+   so anything this far behind it can never be seen or touched again. Without
+   this, powerups and enemies left behind kept running full collision every
+   frame for the rest of the course. */
+const CULL_BEHIND = 72;
+function offScreenLeft(e) { return e.x + (e.w || 12) < GAME.camera - CULL_BEHIND; }
+
+/* in-place compaction: avoids allocating a replacement array every frame */
+function compact(arr, dead) {
+  let w = 0;
+  for (let i = 0; i < arr.length; i++) { const v = arr[i]; if (!dead(v)) arr[w++] = v; }
+  arr.length = w;
+}
+
 /* ---------- items ---------- */
+const itemDead = it => it.dead;
 function updateItems() {
   const m = GAME.mario;
   for (const it of GAME.items) {
     if (it.type === 'coinAnim') { it.t++; it.y -= 1.4; if (it.t > 26) it.dead = true; continue; }
+    if (offScreenLeft(it)) { it.dead = true; continue; }
     if (it.rising) {
       it.y -= 1;
-      if (it.y <= 13*TILE - it.h - 2) { it.y = 13*TILE - it.h - 2; it.rising = false; }
+      if (it.y <= it.targetY) { it.y = it.targetY; it.rising = false; }
       continue;
     }
     it.vy += 0.4;
@@ -3293,6 +3385,7 @@ function updateItems() {
     r = collideAxis(it, 0, it.vy);
     if (r.floor) { if (it.type === 'star' && it.vy > 1) it.vy = -3.2; else it.vy = 0; }
     if (r.ceil && it.type === 'star') it.vy = 0.5;
+    if (it.y > 260) it.dead = true; // fell off the level
   }
   for (const it of GAME.items) {
     if (it.dead || it.rising || it.type === 'coinAnim' || m.dead) continue;
@@ -3305,15 +3398,15 @@ function updateItems() {
       } else if (it.type === 'flower') {
         if (!m.big) growBig();
         m.fire = true;
+        if (!GAME.taughtFire) { GAME.taughtFire = true; hint(TOUCH ? 'TAP F TO SHOOT' : 'PRESS F TO SHOOT'); }
         Sound.power();
       } else if (it.type === 'star') {
         m.star = 600;
         Sound.oneUp();
       }
-      m.growT = 40;
     }
   }
-  GAME.items = GAME.items.filter(i => !i.dead);
+  compact(GAME.items, itemDead);
 }
 function growBig() {
   const m = GAME.mario;
@@ -3323,40 +3416,99 @@ function growBig() {
 
 /* ---------- fireballs ---------- */
 function updateBalls() {
+  const M = GAME.mario;
   for (const b of GAME.balls) {
+    /* The boss breathes the same projectile the hero throws, so the one field that
+       separates them decides who it can hit. Without this the boss's fire killed its
+       own escort and never touched the player. */
+    if (b.foe) {
+      b.spin++;
+      b.x += b.vx;
+      if (GAME.frame % 2 === 0) GAME.particles.push({ kind: 'trail', x: b.x + 4, y: b.y + 4, vx: -b.vx * 0.15, vy: -0.2, t: 0, color: '#FF4A10' });
+      if (collideAxis(b, 0, 0).hitX || offScreenLeft(b) || b.x > GAME.camera + LOGICAL_W + 24) { b.dead = true; continue; }
+      if (!M.dead && rects(b, M)) { b.dead = true; hurtOrKill(M); }
+      continue;
+    }
     b.spin++;
+    if (GAME.frame % 2 === 0) GAME.particles.push({ kind: 'trail', x: b.x + 4, y: b.y + 4, vx: -b.vx * 0.15, vy: -0.2, t: 0, color: '#FF7A20' });
     b.vy += 0.3;
     let r = collideAxis(b, b.vx, 0);
     if (r.hitX) { b.dead = true; continue; }
     r = collideAxis(b, 0, b.vy);
     if (r.floor) b.vy = -3;
-    if (b.y > 260) { b.dead = true; continue; }
+    /* A ball only died on a wall, a pit or the left edge, so one fired down a long
+       flat stretch kept bouncing off-screen to the right -- measured 118px past the
+       view and 1.4s of life. With only two slots that is a shot the player cannot
+       take, spent on something nobody can see. The original retires them at the
+       screen edge; so does this. Items are deliberately NOT culled this way: a
+       mushroom that outran the camera is a reward the player can still chase. */
+    if (b.y > 260 || offScreenLeft(b) || b.x > GAME.camera + LOGICAL_W + 24) { b.dead = true; continue; }
+    /* The boss is not in the enemy list, so fire went straight through it and nothing
+       happened at all -- a player throwing fireballs got silence, which reads as a bug
+       rather than as "not this way". It absorbs the shot with a flash and a clang: the
+       answer is still the bridge, but the question gets an answer. */
+    const BS = GAME.level.boss;
+    if (BS && !BS.dead && rects(b, BS)) {
+      b.dead = true;
+      BS.hit = 10;
+      Sound.bump();
+      for (let i = 0; i < 5; i++) GAME.particles.push({
+        kind: 'spark', x: b.x + 4, y: b.y + 4,
+        vx: -1.6 - Math.random() * 1.2, vy: (Math.random() - 0.5) * 2.4, t: 0
+      });
+      continue;
+    }
     for (const e of GAME.level.enemies) {
-      if (e.dead || e.flat || e.gone || e.x > GAME.camera + 270) continue;
+      if (e.dead || e.flat || e.gone || e.x > GAME.camera + WAKE_AHEAD) continue;
+      if (e.type === 'blaze') continue;      // it is made of fire; fire is not an answer
       if (rects(b, e)) {
         b.dead = true;
-        if (e.type === 'shelly' || e.type === 'shellMove') { e.type = 'shell'; e.vx = 0; if (e.h === 16) { e.h = 10; e.y += 6; } }
+        if (e.type === 'shelly' || e.type === 'shellMove') { e.type = 'shell'; e.vx = 0; if (e.h === 16) { e.h = 10; e.y += 6; e.py = e.y; } }
         else { e.flat = true; e.deadT = 30; }
-        addScore(200, e);
+        // fire is the answer to the enemies that cannot be stomped
+        addScore(e.spiky || e.type === 'chomp' || e.type === 'bolt' ? 400 : 200, e);
         Sound.stomp();
         break;
       }
     }
   }
-  GAME.balls = GAME.balls.filter(b => !b.dead);
+  compact(GAME.balls, itemDead);
 }
 
 /* ---------- enemies ---------- */
 function rects(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
+/* The chain, and what it is worth. Past the end of the ladder it pays a life instead of
+   repeating the top figure: eight without touching the ground is something the player
+   did deliberately, and a life is the only currency here that changes what happens
+   next. Points at that stage are a number going up on a screen they are not reading. */
 function bumpCombo() {
-  const i = Math.min(GAME.combo, COMBO_PTS.length - 1);
-  GAME.combo = Math.min(GAME.combo + 1, COMBO_PTS.length);
+  const prev = GAME.combo;
+  const i = Math.min(prev, COMBO_PTS.length - 1);
+  GAME.combo = Math.min(prev + 1, COMBO_PTS.length);
+  GAME.run.chain = Math.max(GAME.run.chain, GAME.combo);
+  /* The life is earned once -- on the single stomp that completes the ladder -- not on
+     every stomp after it. The first version checked GAME.combo (the value AFTER
+     incrementing), which stays >= COMBO_PTS.length for the rest of an unbroken chain, so
+     riding a shell down a corridor of walkers turned into unlimited lives: 15 stomps in
+     one chain granted 7. `prev` is the value BEFORE this stomp, and it equals
+     COMBO_PTS.length - 1 on exactly one stomp per chain -- the one that pushes it over. */
+  if (prev === COMBO_PTS.length - 1) {
+    GAME.lives++;
+    Sound.oneUp();
+    const m = GAME.mario;
+    GAME.popups.push({ x: m.x, y: m.y - 20, text: '1UP', t: 0 });
+  }
   return COMBO_PTS[i];
 }
 function addScore(pts, e) {
   GAME.score += pts;
+  /* An enemy is the only thing passed here that carries a `type` -- the flagpole bonus
+     and the axe bonus pass a bare position. Counting in this one place means a new
+     enemy is counted the day it is added, instead of on the day someone remembers the
+     twelve call sites. */
+  if (e && e.type) GAME.run.foes++;
   if (e) GAME.popups.push({ x: e.x, y: e.y - 6, text: String(pts), t: 0 });
 }
 function killMario(force) {
@@ -3364,37 +3516,189 @@ function killMario(force) {
   if (m.dead || (!force && m.star > 0)) return;
   m.dead = true; m.vy = -5.5; m.vx = 0; m.deathTimer = 0;
   GAME.combo = 0;
+  BGM.stop();   // the death jingle should not fight the course music
   Sound.die();
+}
+/* One damage path for every source of contact damage.
+   The post-hit invulnerability window used to be set but never checked, so a
+   single sustained touch damaged the player every frame: fire -> big -> small
+   -> dead in three frames. Stomping stays allowed while invulnerable. */
+function hurtOrKill(m) {
+  if (m.invuln > 0 || m.star > 0 || m.dead) return;
+  if (m.big) {
+    if (m.fire) m.fire = false;
+    else { const bottom = m.y + m.h; m.big = false; m.h = 16; m.y = bottom - m.h; }
+    m.invuln = 90;
+    GAME.balls.length = 0;
+    Sound.shrink();
+  } else {
+    killMario();
+  }
 }
 function updateEnemies() {
   const m = GAME.mario;
   for (const e of GAME.level.enemies) {
     if (e.gone) continue;
     if (e.flat) { e.deadT--; if (e.deadT <= 0) e.gone = true; continue; }
-    if (e.x > GAME.camera + 270) continue;
+    if (e.x > GAME.camera + WAKE_AHEAD) continue; // not on screen yet: stays asleep
+    /* Every other enemy in the game teaches itself: you jump on it and it dies.
+       SPIKO teaches by killing you, and a player has no way to read "not this
+       one" off a sprite they have never seen. It gets one line, once, the first
+       time one is on screen -- the same treatment run and fire already get. */
+    if (e.spiky && !GAME.taughtSpike && GAME.state === 'play' && e.x < GAME.camera + LOGICAL_W) {
+      GAME.taughtSpike = true;
+      hint('SPIKES! JUMP OVER - NEVER STOMP');
+    }
+    if (offScreenLeft(e)) { e.gone = true; continue; } // left behind for good
     e.t++;
+
+    if (e.type === 'blaze') {
+      /* Rises out of its pool, arcs, falls back. Timed from its own counter so two
+         pools never fire in lockstep, and it sleeps below the floor between leaps so
+         nothing off-screen is being simulated for no reason. */
+      e.t++;
+      const cycle = e.t % e.period;
+      /* Two rules, both of which this game has already had to learn the hard way.
+         1. It never launches into a hero who is already in the air over its pool. The
+            pipe plant does the same thing for the same reason: a hazard that appears
+            after you committed is not a hazard, it is a coin flip. Traced exactly that
+            death -- the pool read clear at takeoff and the flame erupted underneath.
+         2. Every launch is announced. Twenty frames of bubbling at the surface, so a
+            player standing at the lip can see it coming and wait. */
+      const overPool = !m.dead && !m.onGround &&
+        m.x + m.w > e.x - 22 && m.x < e.x + e.w + 22;
+      if (cycle === e.period - 20 && !overPool) e.warn = 20;
+      if (e.warn > 0) {
+        e.warn--;
+        if (GAME.frame % 4 === 0) GAME.particles.push({
+          kind: 'spark', x: e.x + 2 + Math.random() * 8, y: 13 * TILE + 2,
+          vx: (Math.random() - 0.5) * 0.8, vy: -1.1 - Math.random(), t: 0
+        });
+        if (e.warn === 0) { e.vy = -e.power; e.up = true; Sound.noise(0.18, 0.07, 0, 700, 220); }
+      }
+      if (e.up) {
+        e.vy += 0.30;
+        e.y += e.vy;
+        if (e.y > e.homeY) { e.y = e.homeY; e.up = false; e.vy = 0; }
+      }
+      if (!m.dead && e.up && rects(m, e)) hurtOrKill(m, e);
+      continue;
+    }
+    if (e.type === 'glider' || e.type === 'fish') {
+      /* Sine path, no gravity, no tile collision: it flies. Stomping it works and is
+         worth the same as a walker; touching it from anywhere else hurts. */
+      e.x += e.vx;
+      e.y = e.baseY + Math.sin(e.t * e.freq) * e.amp;
+      if (!m.dead && rects(m, e)) {
+        const feet = m.y + m.h, wasFeet = (m.py === undefined ? m.y : m.py) + m.h;
+        /* Fish and gliders share this branch, and it carries its own stomp test -- the
+           water rule has to be repeated here or a fish in a lagoon is stompable while
+           every other enemy in the same water is not. */
+        const canStomp = !inWater(m) &&
+          ((m.vy > 0.5 && wasFeet <= e.y + e.h * 0.7) || (feet < e.y + e.h * 0.7 && wasFeet <= e.y + 4));
+        if (canStomp) {
+          e.flat = true; e.deadT = 30;
+          m.vy = keys.jump ? -4.5 : -3; m.sq = 1.15;
+          addScore(bumpCombo(), e); Sound.stomp();
+          dust(e.x + 7, e.y + e.h, 4);
+        } else if (m.star > 0) { e.flat = true; e.deadT = 30; addScore(200, e); Sound.stomp(); }
+        else hurtOrKill(m, e);
+      }
+      continue;
+    }
+    if (e.type === 'cannon') {
+      /* The barrel itself never touches anyone. It fires when the player is within
+         about a screen and a half, on the near side -- a cannon that shoots at your
+         back after you pass it is noise, not a threat. */
+      const dx = m.x - e.x;
+      if (e.t % e.cool === 0 && dx < 30 && dx > -300 && !m.dead) {
+        GAME.level.enemies.push({
+          type: 'bolt', x: e.x - 10, y: e.y + 3, w: 12, h: 10,
+          vx: -1.9, vy: 0, t: 0, air: true, px: e.x - 10, py: e.y + 3
+        });
+        Sound.kick();
+      }
+      continue;
+    }
+    if (e.type === 'bolt') {
+      e.x += e.vx;
+      if (e.x < GAME.camera - 40) { e.gone = true; continue; }
+      if (!m.dead && rects(m, e)) {
+        const feet = m.y + m.h, wasFeet = (m.py === undefined ? m.y : m.py) + m.h;
+        if ((m.vy > 0.5 && wasFeet <= e.y + e.h * 0.7) || (feet < e.y + e.h * 0.7 && wasFeet <= e.y + 4)) {
+          e.flat = true; e.deadT = 24;
+          m.vy = keys.jump ? -4.5 : -3; m.sq = 1.15;
+          addScore(bumpCombo(), e); Sound.stomp();
+        } else if (m.star > 0) { e.flat = true; e.deadT = 24; addScore(200, e); Sound.stomp(); }
+        else hurtOrKill(m, e);
+      }
+      continue;
+    }
+    if (e.type === 'chomp') {
+      /* Pipe plant: rides up out of the mouth, waits, drops back in. It only
+         emerges when the player is not standing right on top of the pipe, so it
+         can never spawn straight into them. */
+      const cycle = (e.t + e.phase) % 150;
+      const overhead = Math.abs((m.x + m.w / 2) - (e.x + e.w / 2)) < 22 && m.y + m.h <= e.baseY + 2;
+      const wantOut = cycle < 80 && !overhead;
+      const targetY = wantOut ? e.baseY - e.h : e.baseY;
+      e.y += Math.sign(targetY - e.y) * Math.min(0.8, Math.abs(targetY - e.y));
+      if (!m.dead && e.y < e.baseY && rects(m, e)) hurtOrKill(m, e);
+      continue;
+    }
+
     let r = collideAxis(e, e.vx, 0);
     if (r.hitX) { if (e.type === 'shellMove') e.vx = -e.vx * 0.7; else e.vx = -e.vx; }
+    if (e.type === 'flappy') {
+      // hop on a timer; the horizontal drift is unchanged so it stays readable
+      e.hop = (e.hop || 0) + 1;
+      if (e.vy === 0 && e.hop > 44) { e.vy = -4.6; e.hop = 0; }
+    }
     e.vy += 0.4;
     r = collideAxis(e, 0, e.vy);
-    if (r.floor) { if (e.type === 'star' && e.vy > 1) e.vy = -3.2; else e.vy = 0; }
-    if (e.y > 260) { e.dead = true; continue; }
+    if (r.floor) e.vy = 0;
+    // fell into a gap: retire it, or it keeps simulating forever below the level
+    if (e.y > 260) { e.gone = true; continue; }
 
     if (m.dead) continue;
     if (rects(m, e)) {
-      const stomping = m.vy > 0.5 && (m.y + m.h) < (e.y + e.h * 0.7);
+      /* Whether this is a stomp used to be judged from the current frame alone --
+         falling, and feet above the shoulders -- which lost two cases that the
+         player reads as a clean landing:
+           - a stomp bounces you upward, so a second enemy standing right next to
+             the first was tested with an upward vy and scored as a side hit;
+           - falling at terminal speed covers 5.5px per step, enough to end the
+             step past the shoulder line of a 12px enemy it was clearly above.
+         `py` is the position at the top of the step, so the test now asks where
+         the feet came from rather than only where they are. */
+      const feet = m.y + m.h, wasFeet = (m.py === undefined ? m.y : m.py) + m.h;
+      const shoulders = e.y + e.h * 0.7;
+      /* No stomping in water. There is no weight behind a stroke, and the original does
+         not allow it either -- fire and the star are the answers down here. */
+      const stomping = !inWater(m) && ((m.vy > 0.5 && wasFeet <= shoulders) ||
+                       (feet < shoulders && wasFeet <= e.y + 4));
       if (m.star > 0) {
         e.flat = true; e.deadT = 30;
         addScore(200, e); Sound.stomp();
+      } else if (stomping && e.spiky) {
+        /* SPIKO cannot be stomped: landing on the spines hurts and bounces you
+           off, so it has to be dealt with using fire, a star or a kicked shell. */
+        m.vy = -3.4; m.sq = 1.1;
+        hurtOrKill(m, e);
       } else if (stomping) {
         m.y = e.y - m.h; m.vy = keys.jump ? -4.5 : -3;
         m.sq = 1.15;
-        if (e.type === 'puff') {
+        if (e.type === 'puff' || e.type === 'flappy') {
           e.flat = true; e.deadT = 30;
           addScore(bumpCombo(), e); Sound.stomp();
           dust(e.x + 6, e.y + e.h, 4);
+          /* No screen shake here. A stomp is the single most common action in the
+             game, and two frames of randomly offset world (with a HUD that does
+             not move) read as a stutter rather than an impact. The original
+             shakes for nothing at all; breaking a brick still does. */
+          for (let i = 0; i < 4; i++) GAME.particles.push({ kind: 'spark', x: e.x + 6, y: e.y + 4, vx: (Math.random() - 0.5) * 2, vy: -Math.random() * 1.5, t: 0 });
         } else if (e.type === 'shelly') {
-          e.type = 'shell'; e.vx = 0; e.h = 10; e.y += 6;
+          e.type = 'shell'; e.vx = 0; e.h = 10; e.y += 6; e.py = e.y;
           addScore(bumpCombo(), e); Sound.stomp();
         } else if (e.type === 'shell') {
           e.type = 'shellMove'; e.vx = (m.x < e.x ? 1 : -1) * 4;
@@ -3404,16 +3708,7 @@ function updateEnemies() {
           addScore(100, e); Sound.kick();
         }
       } else {
-        if (m.big) {
-          // classic damage: shrink (fire -> normal, big -> small)
-          if (m.fire) m.fire = false;
-          else { const bottom = m.y + m.h; m.big = false; m.h = 16; m.y = bottom - m.h; }
-          m.invuln = 90;
-          GAME.balls.length = 0;
-          Sound.shrink();
-        } else {
-          killMario();
-        }
+        hurtOrKill(m, e);
       }
     }
     if (e.type === 'shellMove' && Math.abs(e.vx) > 2) {
@@ -3423,7 +3718,264 @@ function updateEnemies() {
       }
     }
   }
+  /* Retired enemies were only flagged, never removed -- items, fireballs,
+     particles, popups and bumps are all compacted, but the enemy list grew to the
+     course's full population and stayed there, so every frame walked 46 entries to
+     skip most of them (and so did the draw pass, and every shell-vs-enemy check).
+     `isGone` is set by the cull-behind and squash paths, so the same compaction
+     applies here. */
+  compact(GAME.level.enemies, isGone);
 }
+
+/* ---------- bonus rooms ----------
+   Entry is a real descent, not a cut: the hero sinks into the mouth over 26 frames
+   with the pipe redrawn over them, so the transition explains itself. The course is
+   kept whole in GAME.room and restored on the way out -- rebuilding it would respawn
+   every enemy the player already dealt with and reset the checkpoint pennant. */
+const PIPE_FRAMES = 26;
+function pipeEntryUnder(m) {
+  const L = GAME.level;
+  if (!L.entries || !m.onGround) return null;
+  for (const e of L.entries) {
+    const left = e.tx * TILE, right = left + 2 * TILE;
+    const cx = m.x + m.w / 2;
+    if (cx < left + 2 || cx > right - 2) continue;
+    if (Math.abs((m.y + m.h) - e.ty * TILE) > 2) continue;
+    return e;
+  }
+  return null;
+}
+function roomExitUnder(m) {
+  const L = GAME.level;
+  if (!L.room || !m.onGround) return false;
+  const left = L.exitTx * TILE, right = left + 2 * TILE;
+  const cx = m.x + m.w / 2;
+  const ty = (L.exitTy === undefined ? 11 : L.exitTy);
+  return cx > left + 2 && cx < right - 2 && Math.abs((m.y + m.h) - ty * TILE) <= 2;
+}
+function enterPipe(entry) {
+  GAME.pipeAnim = { dir: 'in', t: 0, entry };
+  Sound.pipe();
+}
+function leavePipe() {
+  GAME.pipeAnim = { dir: 'out', t: 0 };
+  Sound.pipe();
+}
+/* the swap itself, at the midpoint of the animation */
+function swapToRoom(entry) {
+  const m = GAME.mario;
+  GAME.room = {
+    level: GAME.level, x: m.x, y: m.y, camera: GAME.camera,
+    theme: GAME.theme, exitTo: entry.exitTx
+  };
+  GAME.level = roomFor(entry, GAME.world);
+  GAME.theme = CAVERN_THEME;
+  GAME.items.length = 0; GAME.balls.length = 0; GAME.particles.length = 0;
+  GAME.popups.length = 0; GAME.bumps.length = 0;
+  m.x = 2 * TILE; m.y = 13 * TILE - m.h; m.vx = 0; m.vy = 0; m.plat = null;
+  m.onGround = true; m.facing = 1;
+  GAME.camera = 0; snapMario();
+  BGM.stop(); BGM.select(CAVERN_THEME); if (GAME.bgmOn) BGM.start();
+}
+function swapToCourse() {
+  const m = GAME.mario, save = GAME.room;
+  const exitTx = GAME.level.exitTo;
+  GAME.level = save.level;
+  GAME.theme = save.theme;
+  GAME.items.length = 0; GAME.balls.length = 0; GAME.particles.length = 0;
+  GAME.popups.length = 0; GAME.bumps.length = 0;
+  /* Out of the pipe the course authored as the exit, standing on its lip. If that
+     column is not a pipe top (a later edit could move it), fall back to where the
+     player went in, which is always valid. */
+  let ty = -1;
+  for (let y = 0; y < GAME.level.H; y++) {
+    const c = GAME.level.map[y][exitTx];
+    if (c === 'T' || c === 'E') { ty = y; break; }
+  }
+  if (ty < 0) { m.x = save.x; m.y = save.y; GAME.camera = save.camera; }
+  else { m.x = exitTx * TILE + 2; m.y = ty * TILE - m.h; GAME.camera = Math.max(save.camera, m.x - CAM_LEAD); }
+  m.vx = 0; m.vy = 0; m.onGround = true; m.plat = null;
+  GAME.room = null;
+  snapMario();
+  BGM.stop(); BGM.select(GAME.theme); if (GAME.bgmOn) BGM.start();
+}
+/* Runs before the hero and swallows the step while a transition plays. Three beats:
+   sink into the mouth, swap at black, then let the existing course fade bring the
+   new place up. Coming back out runs the same beats in reverse, so the hero rises
+   out of the exit pipe rather than appearing on top of it. */
+const PIPE_SINK = 20, PIPE_HALF = 14;
+function updatePipeAnim() {
+  const a = GAME.pipeAnim, m = GAME.mario;
+  if (!a) return false;
+  a.t++;
+  if (a.dir === 'in') {
+    if (a.t <= PIPE_HALF) m.y += PIPE_SINK / PIPE_HALF;
+    else if (a.t === PIPE_HALF + 1) { swapToRoom(a.entry); GAME.fade = 1; GAME.fadeDir = -1; }
+    if (a.t >= PIPE_FRAMES) GAME.pipeAnim = null;
+  } else {
+    if (a.t === 1) {
+      swapToCourse();
+      a.lipY = m.y;                   // where the hero belongs when the rise finishes
+      m.y += PIPE_SINK;               // start inside the pipe
+      GAME.fade = 1; GAME.fadeDir = -1;
+    } else if (m.y > a.lipY) {
+      m.y = Math.max(a.lipY, m.y - PIPE_SINK / PIPE_HALF);
+    }
+    if (a.t >= PIPE_FRAMES) { GAME.pipeAnim = null; if (a.lipY !== undefined) m.y = a.lipY; }
+  }
+  m.state = 'stand';
+  snapMario();                        // no interpolation across the swap
+  return true;
+}
+
+/* ---------- fortress hazards ----------
+   A fire bar is a pivot plus N links; only the links hurt, and only their centres are
+   tested, so the hazard matches what is drawn. The bar spins at a fixed rate from a
+   seeded starting angle, which keeps it deterministic across a respawn. */
+function updateBars() {
+  const L = GAME.level, m = GAME.mario;
+  if (!L.bars) return;
+  for (const b of L.bars) {
+    b.a += b.spin;
+    if (m.dead || m.star > 0 || m.invuln > 0) continue;
+    for (let i = 1; i <= b.len; i++) {
+      const lx = b.x + Math.cos(b.a) * i * 8, ly = b.y + Math.sin(b.a) * i * 8;
+      if (lx > m.x - 4 && lx < m.x + m.w + 4 && ly > m.y - 4 && ly < m.y + m.h + 4) { hurtOrKill(m); return; }
+    }
+  }
+}
+/* The boss paces its bridge and spits fire. It cannot be stomped and it cannot be
+   killed by fire alone -- five hits stagger it, but the bridge is the answer, the way
+   the original made the axe the answer. Stomping it hurts you, like a spiked walker,
+   so there is never an ambiguous "why did that not work". */
+function updateBoss() {
+  const L = GAME.level, m = GAME.mario, b = L.boss;
+  if (!b || b.dead) return;
+  b.t++;
+  if (b.hit > 0) b.hit--;
+  /* One roar the first time it is on screen, and one line naming the objective. A boss
+     that can be neither stomped nor burned has to say what it wants from you, once. */
+  if (!b.seen && b.x < GAME.camera + LOGICAL_W - 8) {
+    b.seen = true;
+    Sound.roar();
+    if (!GAME.taughtAxe) { GAME.taughtAxe = true; hint('REACH THE AXE BEYOND IT'); }
+  }
+  if (GAME.collapse > 0) { b.vy += 0.5; b.y += b.vy; if (b.y > 260) b.dead = true; return; }
+  b.x += b.vx;
+  if (b.x < b.homeA) { b.x = b.homeA; b.vx = -b.vx; }
+  if (b.x > b.homeB) { b.x = b.homeB; b.vx = -b.vx; }
+  // a hop, so its silhouette is not a metronome
+  if (b.onGround === undefined) b.onGround = true;
+  if (b.onGround && b.t % 150 === 0) { b.vy = -5.2; b.onGround = false; Sound.roar(); }
+  if (!b.onGround) {
+    b.vy += 0.4; b.y += b.vy;
+    const floor = 13 * TILE - b.h;
+    if (b.y >= floor) { b.y = floor; b.vy = 0; b.onGround = true; }
+  }
+  // fire breath, aimed at the hero's side of the bridge
+  if (b.t % b.fire === 0 && Math.abs(m.x - b.x) < 200) {
+    const dir = m.x < b.x ? -1 : 1;
+    GAME.balls.push({ x: b.x + (dir < 0 ? -8 : b.w), y: b.y + 10, w: 8, h: 8,
+                      vx: dir * 2.6, vy: 0, spin: 0, foe: true });
+    Sound.fireball();
+  }
+  if (!m.dead && rects(m, b)) hurtOrKill(m);
+}
+/* The axe. Touching it takes the bridge out: the tiles go, the boss falls with them,
+   and the course clears through the same path a flagpole does. */
+function checkAxe() {
+  const L = GAME.level, m = GAME.mario;
+  if (!L.fortress || GAME.collapse > 0) return;
+  const tx = L.axeX;
+  if (m.x + m.w < tx * TILE || m.x > tx * TILE + TILE) return;
+  if (m.y + m.h < 12 * TILE || m.y > 13 * TILE) return;
+  L.map[12][tx] = ' ';
+  GAME.collapse = 1;
+  addScore(5000, { x: m.x, y: m.y });
+  BGM.stop();
+  Sound.collapse();
+}
+/* The collapse runs as its own little sequence: a tile of bridge goes every three
+   frames from the far end, then the course clears. */
+function updateCollapse() {
+  const L = GAME.level;
+  GAME.collapse++;
+  if (GAME.collapse % 3 === 0) {
+    // the far end goes first: at collapse=3 this is bridgeW-1, at collapse=bridgeW*3 it
+    // is 0. The first version started one tile in and always left the far plank behind.
+    const i = L.bridgeW - Math.floor(GAME.collapse / 3);
+    if (i >= 0) {
+      const x = L.bridgeX + i;
+      L.map[13][x] = ' ';
+      for (let k = 0; k < 3; k++) GAME.particles.push({
+        kind: 'debris', x: x * TILE + 4 + k * 3, y: 13 * TILE + 2,
+        vx: (k - 1) * 1.4, vy: -2.4 - k * 0.3, t: 0
+      });
+    }
+  }
+  if (GAME.collapse > L.bridgeW * 3 + 90 && GAME.state === 'play') {
+    GAME.bossDown = true;
+    GAME.walkDone = true;                 // no castle walk in a fortress
+    GAME.state = 'clear';
+    GAME.worldDone = true;
+    Sound.worldDone();
+  }
+}
+
+/* ---------- moving platforms ----------
+   A cosine shuttle: eased at both ends, and a pure function of the step counter, so
+   two platforms can never drift apart and a respawn puts them exactly where the
+   course expects. dx/dy are what the rider is carried by, so they are derived from
+   the position the interpolation snapshot already took. */
+function updatePlats() {
+  const L = GAME.level;
+  if (!L || !L.plats) return;
+  for (const p of L.plats) {
+    /* The step delta and the deck's previous position are recorded here rather than
+       read from px/py. Those belong to the render interpolation, and physics that
+       depends on a rendering detail breaks the moment anything calls the simulation
+       without it -- which is exactly what happened while testing this. */
+    const ox = p.x, oy = p.y;
+    p.t++;
+    const s = (1 - Math.cos(p.t * p.speed)) / 2;
+    if (p.kind === 'h') { p.x = p.from + (p.to - p.from) * s; p.y = p.y0; }
+    else { p.y = p.from + (p.to - p.from) * s; p.x = p.x0; }
+    p.dx = p.x - ox; p.dy = p.y - oy;
+    p.deckWas = oy;
+  }
+}
+/* Land on a lift, or keep standing on one. Deliberately one-way: a lift is solid
+   from above and passable everywhere else. Making it solid on all sides means a
+   rising lift can crush the player into a ceiling and a moving edge can shove them
+   into a wall, and neither failure is readable -- the player just dies. The test is
+   swept (were my feet above its deck at the top of the step?) for the same reason
+   the stomp test is: a 5.5px/frame fall must not tunnel through an 8px deck. */
+function ridePlats(m, wasAir, fallSpeed) {
+  const L = GAME.level;
+  m.plat = null;
+  if (!L.plats || m.vy < 0) return;
+  for (const p of L.plats) {
+    if (m.x + m.w <= p.x + 1 || m.x >= p.x + p.w - 1) continue;
+    const feet = m.y + m.h;
+    const wasFeet = (m.py === undefined ? m.y : m.py) + m.h;
+    const deckWas = (p.deckWas === undefined ? p.y : p.deckWas);
+    if (wasFeet > deckWas + 2 || feet < p.y) continue;
+    m.y = p.y - m.h; m.vy = 0; m.onGround = true; m.plat = p;
+    if (wasAir && fallSpeed > 2.5) { m.sq = 0.72; dust(m.x + 6, m.y + m.h, 3); Sound.land(); }
+    if (wasAir) GAME.combo = 0;
+    return;
+  }
+}
+
+/* ---------- water ----------
+   In water the jump becomes a stroke: a small impulse you can repeat, against a much
+   weaker gravity and a low terminal speed. That is the whole change in feel, and it is
+   why a lagoon cannot be walked the way a field course can. */
+function inWater(m) {
+  const L = GAME.level;
+  return !!(L && L.water && (m.x + m.w) < L.waterTo * TILE);
+}
+const WATER = { grav: 0.115, maxFall: 1.65, stroke: -2.55, maxV: 1.55, accel: 0.045, drag: 0.965 };
 
 /* ---------- mario (player) ---------- */
 function updateMario() {
@@ -3434,50 +3986,120 @@ function updateMario() {
     if (m.deathTimer > 150) {
       GAME.lives--;
       if (GAME.lives <= 0) {
-        GAME.state = 'gameover'; BGM.stop();
+        GAME.state = 'gameover'; BGM.stop(); Sound.gameOver();
         if (GAME.score > GAME.high) { GAME.high = GAME.score; saveHigh(GAME.high); }
-      } else startLevel();
+        GAME.scoreAt = submitScore();
+        if (GAME.scoreAt === 0) Sound.record();
+      } else {
+        /* startLevel() clears the clock flag, but the interstitial that comes
+           straight after is exactly where it has to be read, so carry it across
+           the rebuild. It is cleared when that card ends. */
+        const ranOut = GAME.timeUp;
+        GAME.afterDeath = true; startLevel(true);
+        GAME.timeUp = ranOut;
+      }
     }
     return;
   }
+  // passing the marker arms it: one line of feedback, once, like the other teaches
+  const cX = GAME.level.checkX;
+  if (cX && !GAME.checkArmed && m.x + m.w > cX * TILE + 6) {
+    GAME.checkArmed = true; GAME.checkT = 1;
+    hint('CHECKPOINT!');
+    Sound.checkpoint();
+    for (let i = 0; i < 10; i++) GAME.particles.push({
+      kind: 'spark', x: cX * TILE + 2, y: 13 * TILE - 8 - i * 3,
+      vx: (Math.random() - 0.5) * 1.4, vy: -Math.random() * 1.2, t: 0
+    });
+  }
+  if (GAME.checkT > 0 && GAME.checkT < 40) GAME.checkT++;   // banner raise animation
+
   if (m.invuln > 0) m.invuln--;
-  if (m.growT > 0) m.growT--;
-  if (m.star > 0) m.star--;
+  if (m.star > 0) {
+    m.star--;
+    /* Running out of star while standing inside an enemy was instant death: the
+       next frame judged an overlap that the star had been holding harmless.
+       The tail of the invincibility hands over to the ordinary hit window. */
+    if (m.star === 0) m.invuln = Math.max(m.invuln, 30);
+    // star sparkle trail
+    if (GAME.frame % 3 === 0) GAME.particles.push({ kind: 'trail', x: m.x + Math.random() * m.w, y: m.y + Math.random() * m.h, vx: (Math.random() - 0.5) * 0.6, vy: -0.3, t: 0, color: ['#FFD84A', '#FF5AA0', '#4AC8FF'][Math.floor(GAME.frame / 6) % 3] });
+  }
   m.sq += (1 - m.sq) * 0.25;
 
+  const wet = inWater(m);
   // original SMB feel: slow build-up to speed, gentle glide
-  const maxV = (keys.run ? 2.7 : 1.4) * ch.speed;
-  const acc = (m.onGround ? (keys.run ? 0.07 : 0.05) : 0.03) * ch.speed;
+  const maxV = wet ? WATER.maxV * ch.speed : (keys.run ? 2.7 : 1.4) * ch.speed;
+  const acc = wet ? WATER.accel * ch.speed : (m.onGround ? (keys.run ? 0.07 : 0.05) : 0.03) * ch.speed;
   if (keys.left && !keys.right) { m.vx -= acc; m.facing = -1; }
   else if (keys.right && !keys.left) { m.vx += acc; m.facing = 1; }
   else if (m.onGround) m.vx *= 0.93;
+  else if (wet) m.vx *= WATER.drag;      // water pushes back even in mid-stroke
   m.vx = Math.max(-maxV, Math.min(maxV, m.vx));
   if (Math.abs(m.vx) < 0.05 && m.onGround) m.vx = 0;
 
   // coyote time + jump buffer for a forgiving, smooth feel
   if (m.onGround) m.coyote = 6; else if (m.coyote > 0) m.coyote--;
   if (m.jumpBuf > 0) m.jumpBuf--;
-  if (m.jumpBuf > 0 && (m.onGround || m.coyote > 0)) {
+  /* A stroke costs nothing but the impulse: no coyote time, no ground needed, no
+     variable height. Holding the key does not swim higher, which is what stops water
+     from becoming a flight level. */
+  if (wet && m.jumpBuf > 0) {
+    m.jumpBuf = 0;
+    m.vy = WATER.stroke;
+    m.onGround = false;
+    m.sq = 1.1;
+    Sound.tone(340, 0.10, 'triangle', 0.06, 0, 120);
+    for (let i = 0; i < 3; i++) GAME.particles.push({
+      kind: 'trail', x: m.x + 2 + Math.random() * 8, y: m.y + m.h - 2,
+      vx: (Math.random() - 0.5) * 0.5, vy: 0.5 + Math.random() * 0.4, t: 0, color: '#BFE8FF'
+    });
+  }
+  if (!wet && m.jumpBuf > 0 && (m.onGround || m.coyote > 0)) {
     m.jumpBuf = 0; m.coyote = 0;
-    m.vy = (m.big ? -7.4 : -7.0) * ch.jump;
+    /* Jump strength is set by the tallest thing the level requires you to mount:
+       the 4-tile pipes are a 64px climb, and gravity is integrated per frame so
+       the real apex lands ~4px under the vy^2/2g figure. At the old -7.0 the
+       baseline hero peaked at 61px and simply could not pass them. Every hero
+       now clears 64px with >=11px of margin, which also matches the original's
+       ~77px small jump.
+       Like the original, running adds height. The bonus is strictly additive so
+       the standing jump -- the figure the level geometry was checked against --
+       never gets weaker. */
+    const speedBonus = Math.min(Math.abs(m.vx) / 2.7, 1) * 0.55;
+    m.vy = (m.big ? -8.45 : -8.1) * ch.jump - speedBonus;
     m.onGround = false;
     m.sq = 1.18;
     Sound.jump();
   }
-  if (keys.jump) m.jumpHeld = true;
-  if (!keys.jump) { m.jumpHeld = false; if (m.vy < -2) m.vy = -2; }
-  m.vy += 0.38;
-  if (m.vy > 5.5) m.vy = 5.5;
+  if (!wet && !keys.jump && m.vy < -2) m.vy = -2; // variable jump height
+  m.vy += wet ? WATER.grav : 0.38;
+  const term = wet ? WATER.maxFall : 5.5;
+  if (m.vy > term) m.vy = term;
 
   const wasAir = !m.onGround;
   const fallSpeed = m.vy;
+  /* Carried before the hero's own movement, the way the original moves its lifts
+     first and then the rider. Both axes: leaving the descent to gravity looked right
+     on paper (the deck falls at most 0.64px/frame, gravity accelerates at 0.38) but
+     measured as contact breaking on 69 of 500 frames, because it takes ~2 frames to
+     catch up each time -- and a flickering onGround costs the player their coyote
+     time and their jump. Riding is glued; ridePlats re-seats the feet afterwards. */
+  if (m.plat) {
+    m.x += m.plat.dx;
+    m.y += m.plat.dy;
+  }
   m.onGround = false;
   collideAxis(m, m.vx, 0);
   const r2 = collideAxis(m, 0, m.vy);
   if (r2.floor) {
     m.vy = 0; m.onGround = true;
-    if (wasAir && fallSpeed > 2.5) { m.sq = 0.72; dust(m.x + 6, m.y + m.h, 3); }
+    if (wasAir && fallSpeed > 2.5) { m.sq = 0.72; dust(m.x + 6, m.y + m.h, 3); Sound.land(); }
+    // The stomp chain is per airborne period. It used to persist across
+    // landings, so stomping one enemy per jump walked the multiplier up to
+    // 8000/enemy for the rest of the course.
+    if (wasAir) GAME.combo = 0;
   }
+  if (!m.onGround) ridePlats(m, wasAir, fallSpeed);
   if (r2.ceil) {
     const ty = Math.floor((m.y - 1) / TILE);
     const cands = [Math.floor((m.x + 2) / TILE), Math.floor((m.x + m.w - 2) / TILE)];
@@ -3488,12 +4110,43 @@ function updateMario() {
         if (!best || Math.abs(tx*TILE + 8 - (m.x + m.w/2)) < Math.abs(best.tx*TILE + 8 - (m.x + m.w/2))) best = { tx, ty };
       }
     }
+    /* Any solid ceiling has to answer back. hitBlock() only covers interactive
+       tiles, so bonking a used block or the underside of terrain used to kill the
+       jump in total silence -- the player reads that as the game hitching, not as
+       a head bump. */
     if (best) hitBlock(best.tx, best.ty);
+    else { Sound.bump(); dust(m.x + m.w / 2, m.y + 2, 2); }
+    m.sq = 0.88;
     m.vy = 0.5;
   }
 
-  // running dust
+  /* Down on a pipe mouth. Checked after movement so the hero has actually settled
+     on the lip, and gated on standing still-ish: pressing down mid-run used to be a
+     jarring stop. */
+  if (keys.down && m.onGround && !GAME.pipeAnim) {
+    if (GAME.level.room) { if (roomExitUnder(m)) leavePipe(); }
+    else { const e = pipeEntryUnder(m); if (e) enterPipe(e); }
+  }
+  /* And a one-time nudge the first time the player stands on one, because a pipe you
+     can enter is invisible knowledge otherwise. */
+  if (!GAME.taughtPipe && !GAME.level.room && pipeEntryUnder(m)) {
+    GAME.taughtPipe = true;
+    hint(TOUCH ? 'TAP DOWN TO ENTER' : 'PRESS DOWN TO ENTER');
+  }
+
+  /* Lava is a pit you can see. Same rule: it ignores the star, because a hazard that
+     the invincibility cancels stops being a hazard at all. */
+  if (GAME.level.fortress && !m.dead && lavaUnder(m)) { killMario(true); return; }
+
+  collectCoins(m);
+
+  // running dust, and a heavier puff while braking so the skid reads as friction
   if (m.onGround && Math.abs(m.vx) > 2 && GAME.frame % 10 === 0) dust(m.x + 6 - m.facing*4, m.y + m.h, 1);
+  if (m.onGround && m.state === 'skid' && GAME.frame % 3 === 0) dust(m.x + 6 - m.facing*5, m.y + m.h, 2);
+
+  // the camera never scrolls back, so without this the player can walk off the
+  // left edge of the view and keep playing completely blind
+  if (m.x < GAME.camera + 1) { m.x = GAME.camera + 1; if (m.vx < 0) m.vx = 0; }
 
   if (m.y > 250) { killMario(true); return; }
 
@@ -3506,11 +4159,18 @@ function updateMario() {
     addScore(pts, m);
     Sound.flag();
     m.x = L.flagX * TILE + 10; m.vx = 0; m.vy = 0; m.facing = 1;
+    snapMario();
     GAME.state = 'clear';
   }
 
+  // animation state -> sprite frame. animT advances with distance travelled, so
+  // the leg cycle speeds up with the character instead of ticking on a timer.
   m.animT += Math.abs(m.vx);
-  m.state = !m.onGround ? 'jump' : (Math.abs(m.vx) > 0.1 ? 'run' : 'idle');
+  const braking = (keys.left && m.vx > 0.6) || (keys.right && m.vx < -0.6);
+  if (!m.onGround) m.state = 'jump';
+  else if (braking) m.state = 'skid';
+  else if (Math.abs(m.vx) > 0.1) m.state = WALK_CYCLE[Math.floor(m.animT / 7) % WALK_CYCLE.length];
+  else m.state = 'stand';
 }
 
 /* ---------- fx ---------- */
