@@ -4976,15 +4976,41 @@ function draw() {
 
 /* ---------- main loop ---------- */
 function update() {
+  /* Snapshot the previous step so draw() can interpolate. The simulation is a
+     fixed 60Hz -- that is required for determinism -- but the display often runs
+     at 120Hz+, where showing each step twice reads as stepped motion. */
+  GAME.camPrev = GAME.camera;
+  if (GAME.mario) { GAME.mario.px = GAME.mario.x; GAME.mario.py = GAME.mario.y; }
+  snapAll(GAME.items); snapAll(GAME.balls); snapAll(GAME.particles); snapAll(GAME.popups);
+  if (GAME.level) { snapAll(GAME.level.enemies); if (GAME.level.plats) snapAll(GAME.level.plats); }
   GAME.frame++;
+  if (GAME.fadeDir !== 0) {
+    GAME.fade += GAME.fadeDir * 0.09;
+    if (GAME.fade <= 0) { GAME.fade = 0; GAME.fadeDir = 0; }
+    else if (GAME.fade >= 1) { GAME.fade = 1; GAME.fadeDir = 0; }
+  }
+  if (GAME.hintT > 0) GAME.hintT--;
+  if (GAME.rebindT > 0) GAME.rebindT--;
   if (GAME.paused) return;
   switch (GAME.state) {
     case 'ready':
       GAME.readyTimer++;
-      if (GAME.readyTimer > 80) GAME.state = 'play';
+      if (GAME.readyTimer > (GAME.afterDeath ? 120 : 80)) {
+        GAME.afterDeath = false; GAME.timeUp = false;
+        GAME.state = 'play';
+        if (!GAME.taughtRun) { GAME.taughtRun = true; hint(TOUCH ? 'HOLD B TO RUN' : 'HOLD Z TO RUN'); }
+      }
       break;
     case 'play':
+      if (updatePipeAnim()) { updateTimer(); break; }   // a transition owns the step
+      updatePlats();      // geometry moves first, then whatever is standing on it
       updateMario();
+      if (GAME.level.fortress) {
+        if (GAME.collapse > 0) updateCollapse();
+        updateBars();
+        updateBoss();
+        checkAxe();
+      }
       updateItems();
       updateBalls();
       updateEnemies();
@@ -4992,8 +5018,8 @@ function update() {
       updateTimer();
       if (GAME.state === 'play') {
         // smooth camera (never scrolls backward, eased)
-        const maxCam = GAME.level.W * TILE - 256;
-        const target = Math.max(GAME.camera, GAME.mario.x - 90);
+        const maxCam = GAME.level.W * TILE - LOGICAL_W;
+        const target = Math.max(GAME.camera, GAME.mario.x - CAM_LEAD);
         GAME.camera += (Math.min(target, maxCam) - GAME.camera) * 0.18;
         if (GAME.camera > maxCam) GAME.camera = maxCam;
       }
@@ -5004,9 +5030,28 @@ function update() {
       break;
   }
 }
-function loop() {
-  update();
-  draw();
+/* Fixed 60Hz timestep. update() used to be called once per animation frame,
+   which made the whole game run at double speed on 120Hz displays. */
+const STEP_MS = 1000 / 60;
+const MAX_CATCHUP = 5;
+let acc = 0, lastTime = performance.now();
+function loop(now) {
   requestAnimationFrame(loop);
+  fitIfNeeded();
+  syncChrome();
+  let dt = now - lastTime;
+  lastTime = now;
+  if (dt > 250) dt = STEP_MS; // returning from a backgrounded tab: don't fast-forward
+  acc += dt;
+  let steps = 0;
+  while (acc >= STEP_MS && steps < MAX_CATCHUP) { update(); acc -= STEP_MS; steps++; }
+  if (steps === MAX_CATCHUP) acc = 0; // too far behind to catch up; drop the debt
+  GAME.alpha = acc / STEP_MS;         // how far into the next step this frame sits
+  draw();
 }
-loop();
+loadSettings();
+warmTextCaches();
+syncKeyLegend();   // the page ships with the defaults written in; make it match the data
+setupTouch();
+fit(); // re-fit: setupTouch may have just reserved room for the pad
+requestAnimationFrame(loop);
