@@ -1643,6 +1643,11 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
     if (e.repeat) return;
     Sound.init();
+    /* Snapshotted so CANCEL can mean cancel: bindKey() commits and saves each step the
+       moment a key is pressed, so without this, escaping out of a 6-step walk after
+       step 1 or 2 left those rebinds in place -- "CANCEL" quietly kept whatever you had
+       already changed and only skipped the steps you hadn't reached yet. */
+    GAME.rebindSnapshot = ACTIONS.reduce((m, a) => { m[a] = KEYS_MAP[a].slice(); return m; }, {});
     GAME.rebind = 0; GAME.rebindMsg = ''; GAME.rebindT = 0;
     return;
   }
@@ -1651,7 +1656,11 @@ window.addEventListener('keydown', e => {
     if (e.repeat) return;
     Sound.init();
     const id = keyId(e);
-    if (id === 'escape') { GAME.rebind = -1; GAME.rebindMsg = 'CANCELLED'; GAME.rebindT = 90; return; }
+    if (id === 'escape') {
+      if (GAME.rebindSnapshot) { KEYS_MAP = GAME.rebindSnapshot; GAME.rebindSnapshot = null; saveSettings(); syncKeyLegend(); }
+      GAME.rebind = -1; GAME.rebindMsg = 'CANCELLED'; GAME.rebindT = 90;
+      return;
+    }
     if (id === 'enter') {                      // skip this one, keep what it had
       GAME.rebind++;
       if (GAME.rebind >= REBINDABLE.length) { GAME.rebind = -1; GAME.rebindMsg = 'SAVED'; GAME.rebindT = 90; }
