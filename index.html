@@ -58,7 +58,20 @@
     </footer>
   </div>
 
-
+  <!-- touch pad: shown only on coarse-pointer devices, wired up in engine.js -->
+  <div id="pad" hidden>
+    <div class="pad-side pad-left">
+      <button class="pad-btn" data-key="left"  aria-label="왼쪽">◀</button>
+      <button class="pad-btn" data-key="right" aria-label="오른쪽">▶</button>
+      <!-- DOWN exists only to enter a pipe, so it sits apart from the d-pad pair -->
+      <button class="pad-btn pad-down" data-key="down" aria-label="파이프 진입">▼</button>
+    </div>
+    <div class="pad-side pad-right">
+      <button class="pad-btn" data-key="run"  aria-label="달리기">B</button>
+      <button class="pad-btn" data-key="fire" aria-label="화염구">F</button>
+      <button class="pad-btn pad-jump" data-key="jump" aria-label="점프">A</button>
+    </div>
+  </div>
   <script src="js/engine.js"></script>
 </body>
 </html>
