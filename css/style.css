@@ -174,3 +174,143 @@ kbd {
   #keys i { display: none; }
   #powerups { display: none; }
 }
+/* Touch devices drive the game from the pad, so the keyboard list is noise and
+   the pad needs the bottom of the screen. */
+body.touch #botbar { display: none; }
+body.touch #topbar .tip { display: none; }
+body.touch #wrap { padding-bottom: 108px; }
+/* Landscape on a phone is where a platformer is actually played, and reserving a
+   band for the pad there cost the playfield 40% of its size (300x225 of a 375-tall
+   screen). The pad is fixed to the bottom corners, and a 4:3 view in a wide box
+   leaves those corners empty anyway, so the canvas takes the full height and the
+   buttons sit beside it rather than under it. Both groups are re-verified as clear
+   of the canvas at 812x375 -- the left group's own overlap (below) was found only
+   because that check was re-run after a later change, not because it originally held. */
+@media (orientation: landscape) {
+  body.touch #wrap { padding-bottom: 10px; }
+  /* Three buttons in a row on the right came to 216px against the 191px of clear
+     space beside the playfield, so B sat on top of the course. Wrapping the group
+     puts B and F on one line with A below them: 146px wide, clear of the canvas,
+     and the shape thumbs expect anyway. */
+  body.touch .pad-right {
+    flex-wrap: wrap;
+    width: 146px;
+    justify-content: flex-end;
+  }
+  /* The left side was never rechecked against that same 191px budget after the down
+     button joined left+right: 12px padding + 188px of buttons put its right edge at
+     200px, 9px into the canvas's bottom-left corner. Same fix as the right side --
+     wrap down under the direction pair instead of beside it, down to 130px. */
+  body.touch .pad-left {
+    flex-wrap: wrap;
+    width: 130px;
+    justify-content: flex-start;
+  }
+}
+/* Portrait phones cannot fill a 4:3 box: at 375x812 the playfield is width-limited
+   to 355x266 inside a 355x656 box, so ~390px is left over no matter what. Pinning
+   the playfield to the top spent all of it as one void under the game, which reads
+   as a broken layout rather than a choice. Splitting it above and below centres the
+   playfield in the space between the header and the thumb pad, which is also where
+   a phone is actually being looked at. */
+@media (orientation: portrait) {
+  body.touch #wrap { align-items: center; padding-top: 8px; }
+  /* The same overflow the landscape fix below solved, on the other axis. pad-left
+     (left + right + the down button added later, 188px) and pad-right (run + fire +
+     jump, 216px) plus #pad's 24px of padding add up to 428px -- wider than every
+     phone in portrait except the very widest, which clipped JUMP, the single most
+     important button, off the right edge of an ordinary 375-390px screen. Wrapping
+     down beneath the direction pair, and jump beneath run+fire (the exact trick
+     landscape already uses for pad-right), brings the two groups to 130px and 146px:
+     300px total, comfortable even at 360px wide. */
+  body.touch .pad-left {
+    flex-wrap: wrap;
+    width: 130px;
+    justify-content: flex-start;
+  }
+  body.touch .pad-right {
+    flex-wrap: wrap;
+    width: 146px;
+    justify-content: flex-end;
+  }
+}
+/* Tall portrait phones have ~200px of dead band under the playfield even after
+   centring. A phone player never sees the keyboard legend, so that band carries the
+   part that still applies to them -- what the powerups do -- and the key chips stay
+   hidden. Only on screens with the room to spare; below 700px the playfield wins. */
+@media (orientation: portrait) and (min-height: 700px) {
+  /* With the legend occupying the bottom band, the playfield goes back to the top:
+     eyes high where the thumbs cannot cover them, reference material directly above
+     the pad, and a single gap between the two instead of three thin ones. */
+  body.touch #wrap { align-items: flex-start; padding-bottom: 0; }
+  body.touch #botbar {
+    display: block;
+    border-top: 0;
+    background: none;
+    /* This reserve has to clear the TALLEST the pad gets, which is now pad-right
+       wrapped to two rows (run+fire at 60px, a 10px gap, jump at 76px = 146px of
+       content) plus #pad's own 14px bottom padding -- 160px. It was still 112px
+       from before the portrait wrap fix above, so the powerup legend sat right
+       under the B/F row and the run button visibly overlapped the text. */
+    padding-bottom: calc(168px + env(safe-area-inset-bottom));
+  }
+  body.touch #keys { display: none; }
+  body.touch #powerups {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px 12px;
+    justify-items: start;
+    font-size: 12px;
+  }
+  body.touch #powerups b { grid-column: 1 / -1; color: var(--gold); }
+}
+
+/* ---------- touch pad ---------- */
+#pad {
+  position: fixed;
+  inset: auto 0 0 0;
+  padding: 0 max(12px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  pointer-events: none;
+  z-index: 10;
+}
+#pad[hidden] { display: none; }
+.pad-side { display: flex; gap: 10px; align-items: flex-end; pointer-events: auto; }
+.pad-btn {
+  width: 60px;
+  height: 60px;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  background: rgba(20, 26, 44, 0.5);
+  color: #fff;
+  font: 600 20px/1 system-ui, sans-serif;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  /* the browser must not treat a held button as a scroll or a long-press menu */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  transition: background 60ms linear, transform 60ms linear;
+}
+/* DOWN is not a movement key here -- it only opens a pipe -- so it reads quieter
+   than the d-pad pair and sits slightly lower, out of the way of a thumb sweeping
+   between left and right. */
+.pad-btn.pad-down {
+  width: 48px;
+  height: 48px;
+  font-size: 16px;
+  opacity: 0.72;
+}
+.pad-btn.pad-jump {
+  width: 76px;
+  height: 76px;
+  font-size: 24px;
+  border-color: rgba(255, 216, 74, 0.75);
+  background: rgba(255, 216, 74, 0.22);
+}
+.pad-btn:active, .pad-btn.held {
+  background: rgba(255, 255, 255, 0.42);
+  transform: scale(0.94);
+}
