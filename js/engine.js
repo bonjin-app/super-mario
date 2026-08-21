@@ -2257,8 +2257,22 @@ function buildLevel(lv, world = 1) {
   });
 
   const AIR_ROWS = [7, 8, 9, 10, 11, 12];
+  /* Open sky means open over the RUN-UP, not just over the spike. Same lesson the pit
+     roofing rule just had to learn: takeoff happens 2-3 tiles early and the head keeps
+     rising for ~2.8 tiles after that, so a block behind the spike caps the jump that was
+     supposed to clear it. The comment below always described this failure ("every approach
+     that took off before the ? group bonked and came down on the spines") -- it was just
+     enforced over the spike's own column instead of the approach.
+     Measured across 24 courses, sweeping the approach width:
+       back=2 (old): 94 spikes, 66 of them with a roofed approach, avg 2.97/6 forgiveness
+       back=3:       96 spikes, 65 roofed
+       back=4:       77 spikes, 39 roofed
+       back=5:       64 spikes,  0 roofed, avg 4.21/6, and no spike below 2/6
+     5 it is. The cost is 30 spikes that no longer fit and degrade to plain walkers via
+     the path below, which is the trade this file already chose to make: a fair enemy in
+     a tight spot beats an unfair one. */
   const airClear = (cx) => {
-    for (let x = cx - 2; x <= cx + 2; x++) {
+    for (let x = cx - 5; x <= cx + 2; x++) {
       if (x < 0 || x >= W) return false;
       if (!solid(map[13][x])) return false;
       for (const y of AIR_ROWS) if (solid(map[y][x])) return false;
