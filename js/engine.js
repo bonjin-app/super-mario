@@ -2532,8 +2532,24 @@ function buildLevel(lv, world = 1) {
      than by editing each collision means a later edit cannot reintroduce the trap.
      A ? or powerup block is not deleted but walked left to the nearest free cell,
      so the reward survives and the row still reads as one group. */
+  /* The approach side needs THREE tiles, not one. The original window assumed takeoff
+     happens on the lip, but a hero at full run speed leaves the ground 2-3 tiles before
+     it, and its head is still rising through these rows for the next ~2.8 tiles
+     (measured: ascent sweep 1.90 tiles for BOLT, 2.19 for PIP, 2.83 for MOCHI at run
+     speeds 2.54 / 2.70 / 3.02 px per frame).
+     Found by the adaptive traversal bot on layout 2, which recurs at world 1-3, 2-2,
+     3-1, 6-3, 7-2, 8-1, 11-3, 12-2 and every fifth course after: a ? group sat at row 9
+     over columns 86-88 with a 3-tile pit at 90-92, so the lip-1 window cleared 89-93 and
+     left the block at 88 -- exactly the takeoff point. MOCHI (lowest jump, highest speed,
+     so it leaves earliest and has the least height to spare) bonked that block mid-ascent,
+     vy went -6.81 -> 0.5 in one frame, and it dropped into the pit pressed against the far
+     lip. Proven by deleting those three cells and re-running: far 93 (dead) -> 100 (alive).
+     This is the same unfair-death shape the rule was written for, one tile outside the
+     window it was given. */
   const airCols = new Set();
-  for (const x of gapCols) { airCols.add(x - 1); airCols.add(x); airCols.add(x + 1); }
+  for (const x of gapCols) {
+    for (let d = -3; d <= 1; d++) airCols.add(x + d);
+  }
   for (const x of airCols) {
     if (x < 0 || x >= W) continue;
     for (const y of AIR_ROWS) {
