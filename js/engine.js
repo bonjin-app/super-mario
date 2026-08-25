@@ -3133,6 +3133,14 @@ function startLevel(keepCheckpoint) {
   GAME.readyTimer = 0;
   GAME.hint = null; GAME.hintT = 0;
   GAME.timeUp = false;
+  /* A course never begins paused. No keyboard path reaches here with paused set --
+     the toggle, quit and autoPause are all gated on state 'play', and update() makes
+     no state transitions while paused, so `paused` implies 'play' today. But the
+     combination is a hard lock if it ever happens: update() returns before the ready
+     timer advances, so the state stays 'ready' forever, and the toggle below refuses
+     to fire outside 'play'. Resetting here makes the invariant structural instead of
+     a property of the paths that currently exist. */
+  GAME.paused = false;
   GAME.state = 'ready';
   BGM.select(GAME.theme);   // each theme has its own track
   if (GAME.bgmOn) BGM.start();
@@ -3205,7 +3213,9 @@ function onKeyPress(k) {
     GAME.state = 'title';
     return;
   }
-  if (k === 'pause' && GAME.state === 'play') {
+  /* Pausing still requires live play, but UN-pausing is allowed from any state, so a
+     paused game is never a game you cannot get out of from the keyboard. */
+  if (k === 'pause' && (GAME.state === 'play' || GAME.paused)) {
     GAME.paused = !GAME.paused;
     // music kept playing straight through a pause
     if (GAME.paused) BGM.stop(); else if (GAME.bgmOn) BGM.start();
