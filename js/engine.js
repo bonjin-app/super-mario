@@ -4085,12 +4085,30 @@ function updateMario() {
   // original SMB feel: slow build-up to speed, gentle glide
   const maxV = wet ? WATER.maxV * ch.speed : (keys.run ? 2.7 : 1.4) * ch.speed;
   const acc = wet ? WATER.accel * ch.speed : (m.onGround ? (keys.run ? 0.07 : 0.05) : 0.03) * ch.speed;
+  /* `steering` records that this step actually applied acceleration, because the
+     creep-killer below must not be allowed to undo it. */
+  let steering = true;
   if (keys.left && !keys.right) { m.vx -= acc; m.facing = -1; }
   else if (keys.right && !keys.left) { m.vx += acc; m.facing = 1; }
-  else if (m.onGround) m.vx *= 0.93;
-  else if (wet) m.vx *= WATER.drag;      // water pushes back even in mid-stroke
+  else {
+    steering = false;
+    if (m.onGround) m.vx *= 0.93;
+    else if (wet) m.vx *= WATER.drag;    // water pushes back even in mid-stroke
+  }
   m.vx = Math.max(-maxV, Math.min(maxV, m.vx));
-  if (Math.abs(m.vx) < 0.05 && m.onGround) m.vx = 0;
+  /* Kill the residue that friction leaves behind, so a hero who lets go stops dead
+     instead of creeping for another second.
+     This used to run unconditionally, and the threshold sits right in the middle of
+     the accelerations it was judging, so it also erased the first step of a press --
+     every step, forever, because vx never got to accumulate. BOLT walking on land
+     (0.05 * 0.94 = 0.047) could not move AT ALL unless the run key was held. In
+     water the acceleration is 0.045 * speed, so PIP (0.0450) and BOLT (0.0423) were
+     both frozen on the seabed while MOCHI (0.0504) squeaked over the line and swam.
+     PIP walking on land survived only because 0.05 is not < 0.05.
+     Every bot in this project's test history held the run key, which is exactly why
+     this lasted: the one input a new player uses -- the arrow key by itself -- was
+     never the input under test. */
+  if (!steering && Math.abs(m.vx) < 0.05 && m.onGround) m.vx = 0;
 
   // coyote time + jump buffer for a forgiving, smooth feel
   if (m.onGround) m.coyote = 6; else if (m.coyote > 0) m.coyote--;
