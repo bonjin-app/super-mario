@@ -1,3 +1,26 @@
+/* Silkscreen, self-hosted. It arrived as a Google Fonts <link>, which put a
+   render-blocking request to a third party in front of a game that until then had
+   zero network dependencies -- and an installable app that needs the network to draw
+   its own labels is a broken promise. Only the `latin` subsets are here, because the
+   chrome renders A-Z, 0-9 and the middot: 3.5KB + 3.2KB, so there is nothing to gain
+   by loading it from anywhere else.
+   SIL Open Font License 1.1, Copyright 2001 The Silkscreen Project Authors.
+   Full text in fonts/OFL.txt, which the licence requires shipping alongside. */
+@font-face {
+  font-family: 'Silkscreen';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/silkscreen-400-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Silkscreen';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/silkscreen-700-latin.woff2') format('woff2');
+}
+
 /* ---------- PIPO JUMP cabinet ----------
    The chrome is an arcade cabinet: marquee, a screen recessed in its bezel, a
    silkscreened control panel. Every colour is lifted from the game's own art so the

@@ -8,10 +8,10 @@
   <title>PIPO JUMP</title>
   <!-- Silkscreen is a real pixel face cut for 8/16px. It carries the control-panel
        labels so the chrome's type and the game's own bitmap type read as one world.
-       Latin and numerals only, so Korean copy falls through to the system stack. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+       Latin and numerals only, so Korean copy falls through to the system stack.
+       Self-hosted (see the @font-face at the top of style.css) -- the page has no
+       third-party requests, so it renders and plays with no network at all. -->
+  <link rel="preload" href="fonts/silkscreen-400-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="css/style.css">
   <!-- The icon is the game's own 'P': the exact 5x7 bitmap from FONT in engine.js,
        painted in the logo's gold gradient. Same letterform on the tab as on the
