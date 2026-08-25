@@ -85,5 +85,15 @@
     </div>
   </div>
   <script src="js/engine.js"></script>
+  <!-- Offline support. Registered after load so it never competes with first paint or
+       with the game booting, and guarded so a browser without service workers (or a
+       page opened over file://) just plays online as before. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(() => { /* offline is a bonus, not a requirement */ });
+      });
+    }
+  </script>
 </body>
 </html>
