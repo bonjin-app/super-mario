@@ -1,0 +1,17 @@
+{
+  "name": "PIPO JUMP",
+  "short_name": "PIPO JUMP",
+  "description": "오리지널 캐릭터 플랫폼 액션 게임",
+  "lang": "ko",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#17111c",
+  "theme_color": "#17111c",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

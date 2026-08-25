@@ -13,6 +13,17 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
+  <!-- The icon is the game's own 'P': the exact 5x7 bitmap from FONT in engine.js,
+       painted in the logo's gold gradient. Same letterform on the tab as on the
+       title screen. Full-bleed at 16/32 because a tab icon renders at ~16px and any
+       padding there costs legibility. -->
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
   <!-- The page is a cabinet: a marquee, a screen recessed in its bezel, a control
@@ -46,9 +57,9 @@
       <!-- Play controls, as keycaps grouped by what they do. Generated from the live
            bindings by syncKeyLegend(), so a rebind repaints the panel instead of
            leaving a stale copy of the defaults printed on it. -->
-      <div id="keys" class="panel" aria-label="조작"></div>
+      <div id="keys" class="panel" role="group" aria-label="조작"></div>
       <!-- Machine controls, one weight down: these run the cabinet, not the hero. -->
-      <div id="sys" class="sysbar" aria-label="시스템"></div>
+      <div id="sys" class="sysbar" role="group" aria-label="시스템"></div>
       <p id="powerups">
         <b>파워업</b>
         <span>버섯 — 커진다</span>

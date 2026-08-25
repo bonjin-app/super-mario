@@ -401,6 +401,15 @@ body.touch #wrap { padding-bottom: 108px; }
   transform: scale(0.94);
 }
 
+/* The cabinet itself never animates, but the pad does need press feedback, and that
+   is input response rather than decoration. Under reduced motion the colour change
+   stays (it is the feedback) and the scale goes (it is the movement). The game
+   respects the same preference internally for shake and palette cycling. */
+@media (prefers-reduced-motion: reduce) {
+  .pad-btn { transition: none; }
+  .pad-btn:active, .pad-btn.held { transform: none; }
+}
+
 /* Keyboard focus stays visible on a page whose own art is high-contrast. */
 :focus-visible {
   outline: 2px solid var(--gold);
