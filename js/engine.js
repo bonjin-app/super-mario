@@ -1816,28 +1816,44 @@ let chromeCache = '';
 function syncKeyLegend() {
   if (typeof document === 'undefined') return;
   const kb = (id) => '<kbd>' + keyName(id) + '</kbd>';
-  const list = document.getElementById('keys');
-  if (list) {
-    const rows = [
-      [KEYS_MAP.left.concat(KEYS_MAP.right).slice(0, 2), '이동', ''],
-      [KEYS_MAP.jump.slice(0, 1), '점프', '길게 누르면 높이'],
-      [KEYS_MAP.run.slice(0, 1), '달리기', '누른 채 이동'],
-      [KEYS_MAP.fire.slice(0, 1), '발사', '꽃 획득 후'],
-      [KEYS_MAP.down.slice(0, 1), '파이프 진입', '진입 가능한 파이프 위에서'],
-      [KEYS_MAP.pause.slice(0, 1), '일시정지', 'R 로 키 변경'],
-      [KEYS_MAP.quit.slice(0, 1), '타이틀로', '일시정지 중에만'],
-      [KEYS_MAP.mute.slice(0, 1), '음소거', ''],
-      [KEYS_MAP.bgm.slice(0, 1), '음악', '']
-    ];
-    list.innerHTML = rows.map(([ids, label, note]) =>
-      '<li>' + ids.map(kb).join('') + '<b>' + label +
-      (note ? ' <i>' + note + '</i>' : '') + '</b></li>').join('');
+  /* One control on the panel: its keycaps and the function silkscreened under them.
+     The function name is in the same English caps the game's own canvas UI uses
+     (PRESS ENTER TO START, COURSE CLEAR), so the panel and the screen speak one
+     language.
+     No explanatory notes here, deliberately. They only applied to three of the five
+     controls, so every control sat at a different height and the panel lost the one
+     thing a silkscreen has: a single baseline. The game already teaches each of them
+     in play ("HOLD Z TO RUN", "PRESS F TO SHOOT") and the pause screen carries the
+     full table with the details. */
+  const ctl = (ids, silk) =>
+    '<span class="ctl"><span class="caps">' + ids.map(kb).join('') + '</span>' +
+    '<span class="silk">' + silk + '</span></span>';
+
+  /* Split by what the control acts on. These move the hero. */
+  const play = document.getElementById('keys');
+  if (play) {
+    play.innerHTML = [
+      ctl(KEYS_MAP.left.slice(0, 1).concat(KEYS_MAP.right.slice(0, 1)), 'MOVE'),
+      ctl(KEYS_MAP.jump.slice(0, 1), 'JUMP'),
+      ctl(KEYS_MAP.run.slice(0, 1),  'RUN'),
+      ctl(KEYS_MAP.fire.slice(0, 1), 'SHOOT'),
+      ctl(KEYS_MAP.down.slice(0, 1), 'PIPE')
+    ].join('');
   }
-  const tip = document.getElementById('tip');
-  if (tip) {
-    tip.innerHTML = '방향키 이동 · ' + kb(KEYS_MAP.jump[0]) + ' 점프 · ' +
-      kb(KEYS_MAP.run[0]) + ' 달리기 · ' + kb(KEYS_MAP.fire[0]) + ' 발사';
+  /* And these run the cabinet. */
+  const sys = document.getElementById('sys');
+  if (sys) {
+    sys.innerHTML = [
+      ctl(KEYS_MAP.pause.slice(0, 1), 'PAUSE'),
+      ctl(['r'], 'REBIND'),
+      ctl(KEYS_MAP.quit.slice(0, 1), 'TITLE'),
+      ctl(KEYS_MAP.mute.slice(0, 1), 'SOUND'),
+      ctl(KEYS_MAP.bgm.slice(0, 1),  'MUSIC')
+    ].join('');
   }
+  /* No touch tip to write. The canvas already prints "A JUMP  HOLD B TO RUN  F SHOOT"
+     and "P PAUSE FOR FULL CONTROLS" itself on touch, and the pad on screen is the
+     control reference, so an HTML copy was the third statement of one thing. */
 }
 function syncChrome() {
   if (!chromeEls.best) {

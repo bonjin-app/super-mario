@@ -1,20 +1,35 @@
+/* ---------- PIPO JUMP cabinet ----------
+   The chrome is an arcade cabinet: marquee, a screen recessed in its bezel, a
+   silkscreened control panel. Every colour is lifted from the game's own art so the
+   housing and the playfield read as one object -- the previous chrome was cold blue
+   (#0d1020) wrapped around warm, saturated pixel art, which read as two unrelated
+   things bolted together.
+
+   Three rules hold this together, and breaking any of them turns it into kitsch:
+     - material and structure only. No wood grain, no scanline overlay, no bevels.
+     - the game owns the display type. The chrome has no display face at all; its
+       largest type is a 16px pixel label.
+     - the cabinet does not move. The game supplies every bit of motion on the page. */
 :root {
-  --bg: #0d1020;
-  --panel: #151a2e;
-  --line: #26304c;
-  --ink: #e6ecff;
-  --dim: #8c9bc4;
-  --gold: #ffd84a;
+  --cab:    #17111c;   /* cabinet body, warm near-black */
+  --bezel:  #0b0710;   /* the recess the screen sits in */
+  --panel:  #201826;   /* control-panel face, one step up from the body */
+  --edge:   #322838;   /* panel seams and keycap walls */
+  --gold:   #ffd84a;   /* straight from the game's logo and HUD */
+  --ink:    #ece3d4;   /* warm off-white, for silkscreen text */
+  --dim:    #8d8296;   /* muted secondary silkscreen */
+  --pix: 'Silkscreen', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --han: system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", sans-serif;
 }
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--bg);
+  background: var(--cab);
   color: var(--ink);
   overflow: hidden;
-  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 13px/1.45 var(--han);
   /* stop double-tap zoom and text selection, which make touch play unusable */
   touch-action: manipulation;
   -webkit-user-select: none;
@@ -31,55 +46,77 @@ html, body {
   height: 100dvh;
 }
 
+/* ---------- marquee ----------
+   A cabinet's marquee names the machine and stops. The game already draws PIPO JUMP
+   at 4x pixel scale on its own title screen, so this stays small and quiet instead
+   of saying the same word twice at two competing sizes. */
 #topbar {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px max(14px, env(safe-area-inset-left));
-  background: linear-gradient(180deg, #1b2138, #141827);
-  border-bottom: 1px solid var(--line);
+  padding: 9px max(14px, env(safe-area-inset-left));
+  background: var(--panel);
+  border-bottom: 1px solid #000;
+  box-shadow: inset 0 -1px 0 var(--edge);
   min-height: 40px;
 }
+/* Power LED. Steady, never blinking -- a running machine is lit, not flashing. */
+#topbar .led {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #6bd048;
+  box-shadow: 0 0 6px rgba(107, 208, 72, 0.8);
+  flex: none;
+}
 #topbar .brand {
-  font-weight: 800;
-  letter-spacing: 0.14em;
+  font-family: var(--pix);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   color: var(--gold);
-  text-shadow: 0 1px 0 #000;
 }
 #topbar .sub { color: var(--dim); font-size: 12px; }
 #topbar .spacer { flex: 1; }
-#topbar .tip { color: var(--dim); font-size: 12px; white-space: nowrap; }
 #topbar .status {
   display: flex;
-  gap: 16px;
+  gap: 14px;
   align-items: center;
   color: var(--dim);
-  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  letter-spacing: 0.06em;
+  font-family: var(--pix);
+  font-size: 10px;
+  letter-spacing: 0.04em;
   white-space: nowrap;
 }
 #topbar .status #stBest { color: var(--gold); }
-@media (max-width: 860px) { #topbar .status #stAudio { display: none; } }
-@media (max-width: 700px) { #topbar .status #stHero { display: none; } }
-@media (max-width: 520px) { #topbar .status { display: none; } }
+@media (max-width: 900px) { #topbar .status #stAudio { display: none; } }
+@media (max-width: 740px) { #topbar .status #stHero  { display: none; } }
+@media (max-width: 560px) { #topbar .status { display: none; } }
 
-/* The game box: the middle grid row, and the box fit() measures. It stays
-   transparent -- the frame belongs to #stage, which is exactly the size of the
-   playfield. Painting the frame here instead made the leftover space (a tall
-   window cannot be filled by a 4:3 view) look like a big empty panel. */
+/* ---------- the screen, in its bezel ----------
+   #wrap is the measured box and stays transparent -- a tall window cannot be filled
+   by a 4:3 view, and painting a frame here made the leftover space look like a big
+   empty panel. On a cabinet that leftover space is simply the machine's body, which
+   is what it now reads as. #stage is the bezel, shrink-wrapped to the canvas. */
 #wrap {
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 0;          /* lets the 1fr row actually shrink */
-  padding: 10px;
+  padding: 14px;
   overflow: hidden;
 }
 #stage {
   display: flex;
   line-height: 0;         /* no inline descender gap under the canvas */
-  border-radius: 4px;
-  box-shadow: 0 0 0 1px #2a3352, 0 14px 44px rgba(0, 0, 0, 0.6);
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--bezel);
+  /* A recess, not a raised card: the inner shadow puts the screen *in* the cabinet.
+     The outer shadow is the cabinet's own contact shadow. */
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 18px 40px rgba(0, 0, 0, 0.55);
 }
 #screen {
   /* crisp-edges first, pixelated last: the last supported value wins, and
@@ -88,105 +125,145 @@ html, body {
   image-rendering: pixelated;
   display: block;
   background: #5c94fc;
-  border-radius: 4px;
+  /* deliberately square. A radius here clips the corner pixels of a 320x240
+     playfield, and the bezel around it already supplies the rounded outline. */
+  border-radius: 0;
 }
 
+/* ---------- control panel ----------
+   The signature. The old legend was a wall of "key - description" rows, which reads
+   as a debug readout. On a real cabinet the controls are silkscreened onto the panel
+   itself, so each control here is a keycap with its function painted underneath, and
+   the panel splits by what the control acts on: the hero (this row) or the machine
+   (the strip below it). That split is information, not decoration. */
 #botbar {
-  padding: 8px max(14px, env(safe-area-inset-left)) max(10px, env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, #141827, #1b2138);
-  border-top: 1px solid var(--line);
+  padding: 10px max(14px, env(safe-area-inset-left)) max(10px, env(safe-area-inset-bottom));
+  background: var(--panel);
+  border-top: 1px solid #000;
+  box-shadow: inset 0 1px 0 var(--edge);
 }
-#keys {
+/* Centred under the screen, because that is where a cabinet's controls are. The
+   first cut left them flush-left in a wide row and the panel read as a toolbar. */
+.panel {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 16px;
-  margin: 0 0 6px;
-  padding: 0;
-  list-style: none;
+  justify-content: center;
+  gap: 10px 22px;
+  align-items: flex-end;
 }
-#keys li { display: flex; align-items: center; gap: 5px; }
-#keys b { font-weight: 600; color: var(--ink); }
-#keys i { font-style: normal; color: var(--dim); font-size: 11px; }
+/* one control: its keycaps, and the function silkscreened under them */
+.ctl { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.ctl .caps { display: flex; gap: 4px; }
+.ctl .silk {
+  font-family: var(--pix);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+/* Notes are gone on purpose. They only applied to three of the five controls, so
+   every row sat at a different height and the panel lost the one thing a silkscreen
+   has -- a single baseline. The game already teaches these in play ("HOLD Z TO RUN",
+   "PRESS F TO SHOOT") and the pause screen carries the full table. */
+/* A keycap: flat matte top, a dark wall, 3px of travel at the bottom. No gradient
+   and no bevel -- the depth comes from the wall, same as the bezel's does. 16px is
+   Silkscreen's native size, so the glyphs land on the pixel grid instead of being
+   resampled into mush at 10px. */
 kbd {
-  display: inline-block;
-  min-width: 20px;
-  padding: 2px 5px;
-  border: 1px solid var(--line);
-  border-bottom-width: 2px;
+  display: inline-grid;
+  place-items: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 7px;
+  border: 1px solid var(--edge);
+  border-bottom-width: 3px;
   border-radius: 4px;
-  background: #202742;
-  color: var(--gold);
-  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-align: center;
+  background: #2a2032;
+  color: var(--ink);
+  font-family: var(--pix);
+  font-size: 16px;
+  line-height: 1;
 }
-#powerups {
+/* Machine controls. On a real cabinet these live behind the coin door, not painted
+   on the panel, so they get one quiet centred line rather than a second keycap row. */
+.sysbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 0;
-  color: var(--dim);
-  font-size: 11px;
+  justify-content: center;
+  gap: 4px 16px;
+  align-items: center;
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--edge);
 }
+.sysbar .ctl { flex-direction: row; align-items: center; gap: 6px; }
+.sysbar kbd {
+  min-width: 0; height: auto; padding: 0;
+  border: 0; border-radius: 0; background: none;
+  color: var(--gold); font-size: 10px;
+}
+.sysbar .silk { font-size: 10px; color: var(--dim); letter-spacing: 0.06em; }
+
+/* Powerups are manual content, not controls, and a third stacked row turned the
+   panel into a wall again. The game teaches every powerup the moment you touch one,
+   so this is hidden except on tall phones, where it is the only reference a touch
+   player gets and there is dead space under the playfield to put it in. */
+#powerups { display: none; }
 #powerups b { color: var(--ink); font-weight: 600; }
+#powerups kbd {
+  min-width: 0; height: auto; padding: 0 2px;
+  border: 0; border-bottom-width: 0; background: none;
+  color: var(--gold); font-size: 10px;
+}
 
 /* ---------- responsive ----------
-   The playfield is a fixed 320x240, so a very wide or very tall box always has
-   space the game cannot use. Rather than stretching the game into it (which would
-   change how much course is visible, i.e. the difficulty), the chrome takes it:
-   on wide screens the key legend becomes a side column beside the playfield. */
-@media (min-width: 1100px) and (min-height: 560px) {
-  #shell {
-    grid-template-rows: auto 1fr;
-    grid-template-columns: 1fr auto;
-    grid-template-areas: 'top top' 'game side';
-  }
-  #topbar { grid-area: top; }
-  #wrap   { grid-area: game; }
-  #botbar {
-    grid-area: side;
-    width: 262px;
-    border-top: 0;
-    border-left: 1px solid var(--line);
-    overflow-y: auto;
-    background: linear-gradient(180deg, #161b2e, #11152400);
-  }
-  #keys { flex-direction: column; gap: 7px; margin-bottom: 12px; }
-  #powerups { flex-direction: column; gap: 5px; }
-  #topbar .tip { display: none; }   /* the side column already says it */
-}
+   The playfield is a fixed 320x240, so a very wide or very tall box always has space
+   the game cannot use. Rather than stretching the game into it (which would change
+   how much course is visible, i.e. the difficulty), the cabinet body takes it. That
+   is what the leftover space now reads as: machine, not void. */
 
-/* Short viewports: the playfield wins, the reference material folds away. */
-@media (max-height: 620px) {
-  #powerups { display: none; }
-  #keys { gap: 4px 12px; }
-  #keys i { display: none; }
+/* Short viewports: the playfield wins, the reference folds away a layer at a time. */
+@media (max-height: 640px) {
+  .sysbar { margin-top: 7px; padding-top: 6px; }
+  kbd { min-width: 26px; height: 26px; }
 }
-@media (max-height: 520px) {
-  #botbar { display: none; }
+@media (max-height: 540px) {
+  .sysbar { display: none; }
   #topbar { min-height: 32px; padding-block: 5px; }
   #topbar .sub { display: none; }
+  #wrap { padding: 8px; }
+  #stage { padding: 6px; }
 }
-@media (max-width: 720px) {
+@media (max-height: 460px) {
+  #botbar { display: none; }
+}
+@media (max-width: 760px) {
   #topbar .sub { display: none; }
 }
 @media (max-width: 560px) {
-  #topbar .tip { display: none; }
-  #keys i { display: none; }
-  #powerups { display: none; }
+  .panel { gap: 8px 14px; }
+  kbd { min-width: 26px; height: 26px; }
 }
-/* Touch devices drive the game from the pad, so the keyboard list is noise and
-   the pad needs the bottom of the screen. */
+
+/* Touch devices drive the game from the pad, so the keyboard panel is noise and the
+   pad needs the bottom of the screen. */
 body.touch #botbar { display: none; }
-body.touch #topbar .tip { display: none; }
+body.touch #topbar .sub { display: none; }
 body.touch #wrap { padding-bottom: 108px; }
 /* Landscape on a phone is where a platformer is actually played, and reserving a
    band for the pad there cost the playfield 40% of its size (300x225 of a 375-tall
    screen). The pad is fixed to the bottom corners, and a 4:3 view in a wide box
    leaves those corners empty anyway, so the canvas takes the full height and the
-   buttons sit beside it rather than under it. Both groups are re-verified as clear
-   of the canvas at 812x375 -- the left group's own overlap (below) was found only
-   because that check was re-run after a later change, not because it originally held. */
-@media (orientation: landscape) {
+   buttons sit beside it. Both groups are re-verified as clear of the canvas at
+   812x375 -- the left group's own overlap (below) was found only because that check
+   was re-run after a later change, not because it originally held. */
+/* Gated on aspect ratio, not just orientation. "Buttons beside the canvas" only works
+   when the box is wide enough that a 4:3 view leaves the bottom corners empty. It was
+   verified at 812x375 (aspect 2.17), where each side has ~190px free -- but at 700x620
+   (aspect 1.13, still landscape) the canvas fills the width to within 14px and all six
+   buttons sat directly on top of the playfield. 16/10 is the narrowest aspect that
+   still leaves a pad group's width free on each side; below it the reserved band from
+   `body.touch #wrap` above applies instead. */
+@media (orientation: landscape) and (min-aspect-ratio: 16/10) {
   body.touch #wrap { padding-bottom: 10px; }
   /* Three buttons in a row on the right came to 216px against the 191px of clear
      space beside the playfield, so B sat on top of the course. Wrapping the group
@@ -215,7 +292,7 @@ body.touch #wrap { padding-bottom: 108px; }
    a phone is actually being looked at. */
 @media (orientation: portrait) {
   body.touch #wrap { align-items: center; padding-top: 8px; }
-  /* The same overflow the landscape fix below solved, on the other axis. pad-left
+  /* The same overflow the landscape fix above solved, on the other axis. pad-left
      (left + right + the down button added later, 188px) and pad-right (run + fire +
      jump, 216px) plus #pad's 24px of padding add up to 428px -- wider than every
      phone in portrait except the very widest, which clipped JUMP, the single most
@@ -235,26 +312,31 @@ body.touch #wrap { padding-bottom: 108px; }
   }
 }
 /* Tall portrait phones have ~200px of dead band under the playfield even after
-   centring. A phone player never sees the keyboard legend, so that band carries the
-   part that still applies to them -- what the powerups do -- and the key chips stay
+   centring. A phone player never sees the keyboard panel, so that band carries the
+   part that still applies to them -- what the powerups do -- and the keycaps stay
    hidden. Only on screens with the room to spare; below 700px the playfield wins. */
 @media (orientation: portrait) and (min-height: 700px) {
-  /* With the legend occupying the bottom band, the playfield goes back to the top:
-     eyes high where the thumbs cannot cover them, reference material directly above
-     the pad, and a single gap between the two instead of three thin ones. */
-  body.touch #wrap { align-items: flex-start; padding-bottom: 0; }
+  /* The playfield is width-limited here (355px wide, so 266px tall at 4:3) and cannot
+     grow into the leftover height, which measured 258px at 375x812. Top-aligning it
+     put all of that slack in one place: a 213px hole between the screen and the
+     reference card, which reads as a layout that broke rather than a machine. Centring
+     splits it into roughly 100px above and below, so it reads as bezel and body. The
+     original reason for top-aligning -- keep the screen clear of the thumbs -- still
+     holds either way: the pad starts at y=652 and the centred screen ends near 430. */
+  body.touch #wrap { align-items: center; padding-bottom: 0; }
   body.touch #botbar {
     display: block;
     border-top: 0;
+    box-shadow: none;
     background: none;
     /* This reserve has to clear the TALLEST the pad gets, which is now pad-right
        wrapped to two rows (run+fire at 60px, a 10px gap, jump at 76px = 146px of
        content) plus #pad's own 14px bottom padding -- 160px. It was still 112px
-       from before the portrait wrap fix above, so the powerup legend sat right
+       from before the portrait wrap fix above, so the powerup reference sat right
        under the B/F row and the run button visibly overlapped the text. */
     padding-bottom: calc(168px + env(safe-area-inset-bottom));
   }
-  body.touch #keys { display: none; }
+  body.touch #keys, body.touch .sysbar { display: none; }
   body.touch #powerups {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -263,6 +345,10 @@ body.touch #wrap { padding-bottom: 108px; }
     font-size: 12px;
   }
   body.touch #powerups b { grid-column: 1 / -1; color: var(--gold); }
+  /* No tip line here. The game already prints "A JUMP  HOLD B TO RUN  F SHOOT" and
+     "P PAUSE FOR FULL CONTROLS" inside the canvas on touch, so an HTML copy made it
+     the third statement of the same thing on one screen. The pad itself is the
+     control reference; this band only needs to say what the powerups do. */
 }
 
 /* ---------- touch pad ---------- */
@@ -281,11 +367,11 @@ body.touch #wrap { padding-bottom: 108px; }
 .pad-btn {
   width: 60px;
   height: 60px;
-  border: 2px solid rgba(255, 255, 255, 0.5);
+  border: 2px solid rgba(236, 227, 212, 0.45);
   border-radius: 50%;
-  background: rgba(20, 26, 44, 0.5);
-  color: #fff;
-  font: 600 20px/1 system-ui, sans-serif;
+  background: rgba(32, 24, 38, 0.6);
+  color: var(--ink);
+  font: 600 20px/1 var(--han);
   display: grid;
   place-items: center;
   padding: 0;
@@ -311,6 +397,12 @@ body.touch #wrap { padding-bottom: 108px; }
   background: rgba(255, 216, 74, 0.22);
 }
 .pad-btn:active, .pad-btn.held {
-  background: rgba(255, 255, 255, 0.42);
+  background: rgba(236, 227, 212, 0.42);
   transform: scale(0.94);
+}
+
+/* Keyboard focus stays visible on a page whose own art is high-contrast. */
+:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
 }

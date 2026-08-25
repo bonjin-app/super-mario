@@ -3,24 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
-  <meta name="theme-color" content="#0d1020">
+  <meta name="theme-color" content="#17111c">
   <meta name="description" content="PIPO JUMP — 오리지널 캐릭터 플랫폼 액션 게임">
   <title>PIPO JUMP</title>
+  <!-- Silkscreen is a real pixel face cut for 8/16px. It carries the control-panel
+       labels so the chrome's type and the game's own bitmap type read as one world.
+       Latin and numerals only, so Korean copy falls through to the system stack. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <!-- Page chrome carries the reference material so the 320x240 playfield does not
-       have to spend pixels on it. Hidden on short viewports, where the canvas needs
-       every row it can get. -->
+  <!-- The page is a cabinet: a marquee, a screen recessed in its bezel, a control
+       panel silkscreened underneath. Structure and material only -- no wood grain,
+       no scanlines, no bevels, and no chrome animation. The game moves; the cabinet
+       stays still. -->
   <div id="shell">
     <header id="topbar">
+      <span class="led" aria-hidden="true"></span>
       <span class="brand">PIPO JUMP</span>
       <span class="sub">오리지널 캐릭터 플랫포머</span>
       <span class="spacer"></span>
-      <span class="tip" id="tip">방향키 이동 · <kbd>Space</kbd> 점프 · <kbd>Z</kbd> 달리기 · <kbd>F</kbd> 발사</span>
-      <!-- Real status on the right so the bar is not brand-at-far-left plus a
-           thousand pixels of nothing. Deliberately shows what the in-game HUD
-           does NOT: the saved best score and the audio state. -->
+      <!-- Machine readout. Deliberately shows what the in-game HUD does NOT: the
+           saved best score and the audio state. -->
       <span class="status">
         <span id="stHero">HERO PIP</span>
         <span id="stBest">BEST 000000</span>
@@ -28,8 +34,8 @@
       </span>
     </header>
 
-    <!-- #wrap is the measured game box; #stage shrink-wraps the canvas so the
-         cabinet frame hugs the playfield instead of enclosing empty space. -->
+    <!-- #wrap is the box fit() measures; #stage is the bezel, shrink-wrapped to the
+         canvas so the recess hugs the playfield instead of enclosing dead space. -->
     <div id="wrap">
       <div id="stage">
         <canvas id="screen" width="320" height="240" aria-label="PIPO JUMP 게임 화면"></canvas>
@@ -37,17 +43,12 @@
     </div>
 
     <footer id="botbar">
-      <ul id="keys">
-        <li><kbd>←</kbd><kbd>→</kbd><b>이동</b></li>
-        <li><kbd>Space</kbd><b>점프 <i>길게 누르면 높이</i></b></li>
-        <li><kbd>Z</kbd><b>달리기 <i>누른 채 이동</i></b></li>
-        <li><kbd>F</kbd><b>발사 <i>꽃 획득 후</i></b></li>
-        <li><kbd>P</kbd><b>일시정지 <i>전체 조작 표시</i></b></li>
-        <li><kbd>↓</kbd><b>파이프 진입 <i>진입 가능한 파이프 위에서</i></b></li>
-        <li><kbd>Q</kbd><b>타이틀로 <i>일시정지 중에만</i></b></li>
-        <li><kbd>M</kbd><b>음소거</b></li>
-        <li><kbd>B</kbd><b>음악</b></li>
-      </ul>
+      <!-- Play controls, as keycaps grouped by what they do. Generated from the live
+           bindings by syncKeyLegend(), so a rebind repaints the panel instead of
+           leaving a stale copy of the defaults printed on it. -->
+      <div id="keys" class="panel" aria-label="조작"></div>
+      <!-- Machine controls, one weight down: these run the cabinet, not the hero. -->
+      <div id="sys" class="sysbar" aria-label="시스템"></div>
       <p id="powerups">
         <b>파워업</b>
         <span>버섯 — 커진다</span>
