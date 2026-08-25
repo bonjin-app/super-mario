@@ -1878,7 +1878,11 @@ const SETTINGS_KEY = 'pipoSettings';
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-    if (typeof s.charIdx === 'number' && s.charIdx >= 0 && s.charIdx < CHARS.length) GAME.charIdx = s.charIdx;
+    /* Number.isInteger, not just 'number': 1.5 satisfies >= 0 and < CHARS.length, and
+       CHARS[1.5] is undefined, so every read of ch.speed throws -- once per frame, for
+       the rest of the session. A stored value that only had to survive `typeof` could
+       brick the game to a black screen with no way back except clearing site data. */
+    if (Number.isInteger(s.charIdx) && s.charIdx >= 0 && s.charIdx < CHARS.length) GAME.charIdx = s.charIdx;
     if (typeof s.muted === 'boolean') Sound.muted = s.muted;
     if (typeof s.bgmOn === 'boolean') GAME.bgmOn = s.bgmOn;
     /* Stored bindings are merged action by action and validated: a corrupt or partial
@@ -3000,7 +3004,16 @@ function loadProgress() {
 function saveProgress(w) {
   try { localStorage.setItem('pipoWorld', String(Math.max(1, Math.min(99, w)))); } catch (e) {}
 }
-function loadHigh() { try { return parseInt(localStorage.getItem('pipoHigh') || '0', 10) || 0; } catch (e) { return 0; } }
+/* Clamped like every other stored number. `parseInt(...) || 0` let a hand-edited
+   negative through, and let an absurd one stick forever: with high at 1e20 no score can
+   ever beat it, so NEW RECORD stops firing and the corner number stops matching the
+   table underneath it. */
+function loadHigh() {
+  try {
+    const v = parseInt(localStorage.getItem('pipoHigh') || '0', 10);
+    return Number.isFinite(v) ? Math.max(0, Math.min(9999999, v)) : 0;
+  } catch (e) { return 0; }
+}
 function saveHigh(v) { try { localStorage.setItem('pipoHigh', String(v)); } catch (e) {} }
 /* ---------- the top five ----------
    `pipoHigh` stays as it is -- an old install keeps its number, and the top bar keeps
