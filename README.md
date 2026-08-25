@@ -1010,6 +1010,25 @@ skipWaiting, 구버전 캐시 삭제, clients.claim, 온라인 network-first, �
 행 네트워크의 2.5초 타임아웃 폴백, 오프라인 내비게이션의 셸 폴백, non-GET·크로스오리진 통과,
 캐시 없는 미스의 에러 응답. 로직은 검증됐고, 브라우저 통합은 실기기 확인이 남았습니다.
 
+**배포 측 짝 — `_headers`**: 워커 전략이 맞아도 전달이 틀리면 소용없습니다. `sw.js`가 캐시에
+붙들리면 **network-first 워커조차 옛 동작에 사람을 고정시킬 수 있습니다** — 페이지는 이미 가진
+워커를 계속 돌리고 교체본을 영영 안 봅니다. 브라우저가 자체적으로 워커 스크립트 캐시를 24시간으로
+제한하지만, 24시간은 고친 게 이미 배포됐는데 버그가 살아있는 하루입니다. 그래서:
+
+| 경로 | 정책 | 이유 |
+|---|---|---|
+| `/sw.js` | `no-cache` | 교체본이 즉시 내려가야 함 |
+| `/`, `/index.html`, manifest | `no-cache` | 앱이 **무엇인지**를 정의(자산 이름·시작 URL) |
+| `/css/*`, `/js/*` | `max-age=0, must-revalidate` | 콘텐츠 해시가 없으니 immutable로 둘 수 없음 — 긴 max-age는 새 HTML에 옛 코드를 붙임 |
+| `/fonts/*` | `max-age=1년, immutable` | 이름이 고정이고 바이트가 안 바뀜. 교체가 필요하면 이름을 바꿈 |
+| `/*.png` | `max-age=1주` | 같은 이유, 조금 짧게 |
+
+`cache.put`의 rejection도 막았습니다. 응답은 페이지로 즉시 보내야 하므로 `put`을 await하지
+않는데, 그러면 rejection이 **unhandled로 새어나갑니다**. `put`은 정당하게 실패할 수 있고
+(용량 초과 등) 실패해도 잃는 건 최적화뿐입니다. 검증 중 이 테스트가 처음엔 통과처럼 보였는데
+`putAttempts=0`이었습니다 — 제가 만든 모의 `Response`는 `type: 'default'`라 `'basic'`만 캐시하는
+분기를 아예 안 탔던 것입니다. 실제 same-origin fetch로 바꿔 5항목 전부 통과 확인.
+
 ## 구성
 
 ```
@@ -1020,6 +1039,7 @@ fonts/*.woff2            Silkscreen latin 서브셋 (셀프호스팅, 6.7KB)
 fonts/OFL.txt            SIL Open Font License 1.1 (배포 요구사항)
 manifest.webmanifest     홈 화면 설치 (fullscreen)
 sw.js                    오프라인 실행 (network-first + 캐시 폴백)
+_headers                 배포 캐시 정책 (Cloudflare Pages / Netlify)
 favicon-16/32.png        탭 아이콘 — 게임 자체 P 글리프
 apple-touch-icon.png     iOS 홈 화면
 icon-192/512.png         manifest 아이콘

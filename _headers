@@ -1,0 +1,37 @@
+# Cloudflare Pages / Netlify header rules. The deployment counterpart to sw.js:
+# without these the worker strategy is correct and the delivery still gets it wrong.
+
+# The service worker script must not be held in any cache. A stale sw.js is the one
+# way a network-first worker can still pin someone to old behaviour: the page would
+# keep running whatever worker it already has, and never see the replacement. Browsers
+# now cap worker-script caching at 24h on their own, but 24h is still a day of a bug
+# staying live when the fix is already deployed.
+/sw.js
+  Cache-Control: no-cache
+  Content-Type: text/javascript; charset=utf-8
+
+# Same reasoning, shorter fuse: these two decide what the app *is*. The HTML names
+# every asset, and the manifest names the icons and the start URL.
+/index.html
+  Cache-Control: no-cache
+/
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache
+  Content-Type: application/manifest+json; charset=utf-8
+
+# The engine and the stylesheet are not content-hashed (no build step), so they cannot
+# be immutable -- a long max-age would serve old code against new HTML. Short, with
+# revalidation, so a deploy lands on the next load instead of whenever a TTL expires.
+/css/*
+  Cache-Control: public, max-age=0, must-revalidate
+/js/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+# Fonts and icons are the opposite case: their bytes only change if the file itself is
+# replaced, and the names are stable on purpose, so they can be cached hard. If a font
+# ever needs replacing, rename it.
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+/*.png
+  Cache-Control: public, max-age=604800

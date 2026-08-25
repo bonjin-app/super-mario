@@ -83,9 +83,15 @@ self.addEventListener('fetch', (e) => {
     try {
       const res = await Promise.race([fetch(req), timeout]);
       clearTimeout(timer);
-      // Only cache real, complete responses -- an opaque or error response would
-      // poison the cache and break the offline path it is supposed to protect.
-      if (res && res.ok && res.type === 'basic') cache.put(req, res.clone());
+      /* Only cache real, complete responses -- an opaque or error response would
+         poison the cache and break the offline path it is supposed to protect.
+         Not awaited, because the response should go to the page immediately, which
+         means a rejection here would surface as an unhandled rejection instead of
+         being ignored. Cache.put can legitimately reject (quota, or a partial
+         response), and a failed write is only a lost optimisation. */
+      if (res && res.ok && res.type === 'basic') {
+        cache.put(req, res.clone()).catch(() => { /* a miss next time, nothing worse */ });
+      }
       return res;
     } catch (err) {
       clearTimeout(timer);
