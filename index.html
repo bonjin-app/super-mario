@@ -5,6 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
   <meta name="theme-color" content="#17111c">
   <meta name="description" content="PIPO JUMP — 오리지널 캐릭터 플랫폼 액션 게임">
+  <!-- Link previews. Without these, sharing the game anywhere renders a blank card.
+       The image is the game's own title screen, drawn by the game and captured at an
+       integer 2x so the pixels stay square, framed in the same bezel the page uses.
+       Paths are relative because this repo has no canonical domain committed to it;
+       every current scraper resolves them against the page URL. If the game gets a
+       fixed domain, make these absolute and add <link rel="canonical">. -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PIPO JUMP">
+  <meta property="og:title" content="PIPO JUMP">
+  <meta property="og:description" content="오리지널 캐릭터 플랫폼 액션 게임. 히어로 셋, 월드는 계속 이어집니다. 설치 없이 브라우저에서 바로.">
+  <meta property="og:image" content="og-preview.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="PIPO JUMP 타이틀 화면 — 로고와 세 히어로 선택 화면">
+  <meta property="og:locale" content="ko_KR">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="PIPO JUMP">
+  <meta name="twitter:description" content="오리지널 캐릭터 플랫폼 액션 게임. 설치 없이 브라우저에서 바로.">
+  <meta name="twitter:image" content="og-preview.png">
   <title>PIPO JUMP</title>
   <!-- Silkscreen is a real pixel face cut for 8/16px. It carries the control-panel
        labels so the chrome's type and the game's own bitmap type read as one world.
@@ -33,7 +52,8 @@
   <div id="shell">
     <header id="topbar">
       <span class="led" aria-hidden="true"></span>
-      <span class="brand">PIPO JUMP</span>
+      <!-- the marquee is the page's heading, not decoration -->
+      <h1 class="brand">PIPO JUMP</h1>
       <span class="sub">오리지널 캐릭터 플랫포머</span>
       <span class="spacer"></span>
       <!-- Machine readout. Deliberately shows what the in-game HUD does NOT: the

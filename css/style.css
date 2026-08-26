@@ -97,6 +97,9 @@ html, body {
   font-weight: 700;
   letter-spacing: 0.02em;
   color: var(--gold);
+  /* it is the page's h1 now (the marquee IS the page heading), so the UA's
+     0.67em block margin has to go or the whole top bar grows around it */
+  margin: 0;
 }
 #topbar .sub { color: var(--dim); font-size: 12px; }
 #topbar .spacer { flex: 1; }
