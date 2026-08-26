@@ -5139,19 +5139,66 @@ function update() {
 const STEP_MS = 1000 / 60;
 const MAX_CATCHUP = 5;
 let acc = 0, lastTime = performance.now();
+/* ---------- crash boundary ----------
+   loop() re-registers itself before it does any work, so one throw does not stop the
+   game -- it repeats, once per frame, forever. The console fills up and the player is
+   left staring at whatever half-drawn frame happened to be on screen, with no idea
+   what went wrong or what to do about it. ISSUE-006 produced exactly that from a
+   single bad value in localStorage.
+   So: catch it once, stop stepping, and say so on the screen in the game's own type.
+   The remedy offered is clearing saved data, because stored state is the one input
+   this game cannot validate its way out of if a future format change slips through. */
+let crashed = null, crashTapAt = 0;
+function reportCrash(e) {
+  if (crashed) return;
+  crashed = e;
+  try { console.error('PIPO JUMP stopped:', e); } catch (_) { /* nothing left to do */ }
+  try { BGM.stop(); } catch (_) {}
+}
+function clearSavedData() {
+  try { for (const k of ['pipoSettings', 'pipoHigh', 'pipoWorld', 'pipoScores']) localStorage.removeItem(k); }
+  catch (_) { /* blocked storage: the reload alone may still help */ }
+  location.reload();
+}
+function drawCrash() {
+  ctx.fillStyle = '#0B0710'; ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+  centerText('SOMETHING BROKE', 74, '#FF6B6B');
+  centerText('THE GAME STOPPED. NOT YOUR FAULT.', 92, '#DDE8FF');
+  centerText(TOUCH ? 'DOUBLE TAP TO RESET SAVED DATA' : 'PRESS R TO RESET SAVED DATA', 118, '#FFD84A');
+  centerText(TOUCH ? 'OR REOPEN THE PAGE' : 'OR RELOAD THE PAGE', 130, '#8C9BC4');
+  const msg = String((crashed && crashed.message) || crashed || '').toUpperCase().slice(0, 36);
+  if (msg) centerText(msg, 158, '#6B6478');
+}
+/* Capture phase and its own listener: the ordinary key handler may be the very thing
+   that threw, so the escape hatch must not depend on it. */
+window.addEventListener('keydown', (e) => {
+  if (!crashed) return;
+  if ((e.key || '').toLowerCase() === 'r') { e.preventDefault(); clearSavedData(); }
+}, true);
+/* Touch has no R key, and a single tap is too easy to hit by accident for something
+   that deletes saved data, so it takes two inside a second and a half. */
+canvas.addEventListener('pointerdown', () => {
+  if (!crashed) return;
+  const t = performance.now();
+  if (t - crashTapAt < 1500) clearSavedData(); else crashTapAt = t;
+});
+
 function loop(now) {
   requestAnimationFrame(loop);
-  fitIfNeeded();
-  syncChrome();
-  let dt = now - lastTime;
-  lastTime = now;
-  if (dt > 250) dt = STEP_MS; // returning from a backgrounded tab: don't fast-forward
-  acc += dt;
-  let steps = 0;
-  while (acc >= STEP_MS && steps < MAX_CATCHUP) { update(); acc -= STEP_MS; steps++; }
-  if (steps === MAX_CATCHUP) acc = 0; // too far behind to catch up; drop the debt
-  GAME.alpha = acc / STEP_MS;         // how far into the next step this frame sits
-  draw();
+  if (crashed) { try { drawCrash(); } catch (_) { /* even the message failed */ } return; }
+  try {
+    fitIfNeeded();
+    syncChrome();
+    let dt = now - lastTime;
+    lastTime = now;
+    if (dt > 250) dt = STEP_MS; // returning from a backgrounded tab: don't fast-forward
+    acc += dt;
+    let steps = 0;
+    while (acc >= STEP_MS && steps < MAX_CATCHUP) { update(); acc -= STEP_MS; steps++; }
+    if (steps === MAX_CATCHUP) acc = 0; // too far behind to catch up; drop the debt
+    GAME.alpha = acc / STEP_MS;         // how far into the next step this frame sits
+    draw();
+  } catch (e) { reportCrash(e); }
 }
 loadSettings();
 warmTextCaches();
