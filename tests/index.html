@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PIPO JUMP — 회귀 테스트</title>
+<!-- Same cabinet palette as the game page, because this is part of the same machine. -->
+<style>
+  :root {
+    --cab:#17111c; --bezel:#0b0710; --panel:#201826; --edge:#322838;
+    --gold:#ffd84a; --ink:#ece3d4; --dim:#8d8296;
+    --ok:#6bd048; --bad:#ff6b6b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--cab); color: var(--ink);
+    font: 13px/1.5 var(--mono);
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; color: var(--gold); letter-spacing: .04em; }
+  .sub { color: var(--dim); margin-bottom: 18px; max-width: 78ch; }
+  #run {
+    font: inherit; color: var(--bezel); background: var(--gold); border: 0;
+    padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: 700;
+  }
+  #run:disabled { opacity: .5; cursor: default; }
+  #summary { margin: 18px 0 10px; font-size: 14px; }
+  table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--edge); vertical-align: top; }
+  th { color: var(--dim); font-weight: 400; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+  td.group { color: var(--dim); white-space: nowrap; }
+  td.verdict { white-space: nowrap; font-weight: 700; }
+  .pass { color: var(--ok); }
+  .fail { color: var(--bad); }
+  td.detail { color: var(--dim); word-break: break-word; }
+  tr.failrow td.detail { color: var(--bad); }
+  td.ms { color: var(--dim); text-align: right; white-space: nowrap; }
+  code { color: var(--gold); }
+</style>
+</head>
+<body>
+  <h1>PIPO JUMP — 회귀 테스트</h1>
+  <p class="sub">
+    실제 <code>../index.html</code>을 iframe으로 띄워 진짜 엔진을 구동합니다. 마크업 사본도, 게임의
+    목(mock)도 없습니다. 테스트마다 새 iframe을 쓰고, 프레임의 <code>requestAnimationFrame</code>을
+    무력화해 스텝을 직접 소유합니다 — 헤드리스 rAF는 121Hz라 rAF로 센 시간은 실제의 절반입니다.
+    입력은 실제 <code>KeyboardEvent</code>로 넣습니다(점프는 상태가 아니라 엣지).
+    <strong>로컬 파일로 열면 동작하지 않습니다</strong> — iframe 접근이 same-origin이어야 하므로
+    HTTP로 서빙해야 합니다: <code>python3 -m http.server</code> 후 <code>/tests/</code>.
+  </p>
+  <button id="run">테스트 실행</button>
+  <div id="summary"></div>
+  <table>
+    <thead><tr><th>그룹</th><th>검사</th><th>결과</th><th>내용</th><th>ms</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <script src="suite.js"></script>
+  <script>
+    const btn = document.getElementById('run');
+    const rows = document.getElementById('rows');
+    const summary = document.getElementById('summary');
+
+    function addRow(r) {
+      const tr = document.createElement('tr');
+      if (!r.pass) tr.className = 'failrow';
+      const cell = (cls, text) => { const td = document.createElement('td'); td.className = cls; td.textContent = text; return td; };
+      tr.appendChild(cell('group', r.group));
+      tr.appendChild(cell('name', r.name));
+      const v = cell('verdict ' + (r.pass ? 'pass' : 'fail'), r.pass ? 'PASS' : 'FAIL');
+      tr.appendChild(v);
+      tr.appendChild(cell('detail', r.detail));
+      tr.appendChild(cell('ms', String(r.ms)));
+      rows.appendChild(tr);
+    }
+
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      rows.textContent = '';
+      summary.textContent = '실행 중…';
+      const started = Date.now();
+      let out;
+      try {
+        out = await PIPO_SUITE.runAll({ document, src: '../index.html', onResult: addRow });
+      } catch (e) {
+        summary.innerHTML = '<span class="fail">러너 자체가 실패했습니다: ' + String(e && e.message || e) + '</span>';
+        btn.disabled = false;
+        return;
+      }
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+      summary.innerHTML = out.failed === 0
+        ? '<span class="pass">' + out.passed + '/' + out.total + ' 통과</span> · ' + secs + '초'
+        : '<span class="fail">' + out.failed + '개 실패</span> · ' + out.passed + '/' + out.total + ' 통과 · ' + secs + '초';
+      // a driver (or a human) can read the whole result off this
+      window.__PIPO_RESULT = out;
+      btn.disabled = false;
+    });
+
+    // ?auto runs on load, for an automated driver
+    if (location.search.includes('auto')) btn.click();
+  </script>
+</body>
+</html>
