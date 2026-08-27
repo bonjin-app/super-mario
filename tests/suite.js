@@ -1647,6 +1647,122 @@
     return 'grounded: ' + grounded.warnFrames + ' warning frames then a launch; airborne over the pool: no wind-up, no launch';
   });
 
+  /* ================= the ways a player can get stranded ================= */
+  /* The worst bug left in a platformer is not a crash, it is being stuck: a pipe that
+     puts you somewhere you cannot leave, a lift that slides out from under you, a clock
+     that kills you with no explanation. All three subsystems existed with no test. */
+
+  test('traversal', 'every pipe round trip returns to the column the course authored', (A) => {
+    const G = A.G, T = A.T;
+    const enterPipe = A.win.eval('enterPipe');
+    const leavePipe = A.win.eval('leavePipe');
+    const roomExitUnder = A.win.eval('roomExitUnder');
+    let trips = 0;
+    const seenRooms = new Set();
+    for (const [w, lv] of [[1, 1], [1, 2], [1, 3], [2, 3], [3, 1], [4, 3]]) {
+      const L = A.course(w, lv, 0);
+      for (const entry of (L.entries || [])) {
+        const courseLevel = G.level;
+        const tag = w + '-' + lv + ' pipe@' + entry.tx;
+        enterPipe(entry);
+        let arrived = false;
+        for (let i = 0; i < 80 && !arrived; i++) { A.stepSim(); if (G.room) arrived = true; }
+        if (!arrived) fail(tag + ': entering never reached a room');
+        if (!G.level.room) fail(tag + ': the level swapped to something that is not a room');
+        seenRooms.add(G.level.roomId);
+        if (!G.mario.onGround) fail(tag + ': the hero arrived in the room in mid-air');
+
+        /* stand on the room's exit lip. roomExitUnder is the engine's own test for
+           "the player is on the exit", so using it keeps the setup honest. */
+        const R = G.level, m = G.mario;
+        m.x = R.exitTx * T + 4; m.y = R.exitTy * T - m.h; m.px = m.x; m.py = m.y;
+        m.vx = 0; m.vy = 0; m.onGround = true;
+        if (!roomExitUnder(m)) fail(tag + ': standing on the room exit is not recognised as being on it');
+
+        leavePipe();
+        let back = false;
+        for (let i = 0; i < 80 && !back; i++) { A.stepSim(); if (!G.room) back = true; }
+        if (!back) fail(tag + ': leaving never returned to the course');
+        if (G.level !== courseLevel) fail(tag + ': came back to a different level object than it left');
+        const outTx = Math.round(G.mario.x / T);
+        if (outTx !== entry.exitTx) fail(tag + ': came out at column ' + outTx + ', the course authored ' + entry.exitTx);
+        let onPipe = false;
+        for (let y = 0; y < G.level.H; y++) {
+          const c = G.level.map[y][outTx];
+          if (c === 'T' || c === 'E') { onPipe = true; break; }
+        }
+        if (!onPipe) fail(tag + ': came out at column ' + outTx + ', which holds no pipe');
+        if (!G.mario.onGround) fail(tag + ': came out in mid-air rather than on the lip');
+        if (G.mario.dead) fail(tag + ': the hero died during the round trip');
+        trips++;
+      }
+    }
+    if (trips < 4) fail('only ' + trips + ' round trips were exercised');
+    if (seenRooms.size < 3) fail('only room types ' + Array.from(seenRooms).join(',') + ' were visited; all three should be');
+    return trips + ' round trips across room types ' + Array.from(seenRooms).sort().join('/') +
+      ', each landing on its authored exit pipe';
+  });
+
+  test('traversal', 'a lift carries the hero instead of sliding out from under', (A) => {
+    const G = A.G;
+    let where = null, lift = null;
+    for (const [w, lv] of [[1, 1], [1, 2], [1, 3], [2, 1], [2, 2], [2, 3], [3, 1], [3, 2]]) {
+      const L = A.course(w, lv, 0);
+      if ((L.plats || []).length) { where = w + '-' + lv; lift = L.plats[0]; break; }
+    }
+    if (!lift) fail('no course in the first three worlds has a lift to ride');
+    const m = G.mario;
+    m.big = false; m.h = 16; m.star = 0; m.invuln = 9999; m.dead = false;
+    m.x = lift.x + 2; m.px = m.x;
+    m.y = lift.y - m.h; m.py = m.y - 1; m.vy = 1; m.vx = 0;
+    G.camera = Math.max(0, lift.x - 120);
+    A.K.left = A.K.right = A.K.jump = false;
+    A.run(2);
+    if (m.plat !== lift) fail(where + ': standing on the lift did not attach the hero to it');
+    /* the assertion is that the hero moves WITH it -- comparing displacements rather
+       than a distance, so it holds whichever way the lift happens to be travelling */
+    const hx = m.x, hy = m.y, px = lift.x, py = lift.y;
+    A.run(40);
+    const heroDx = m.x - hx, heroDy = m.y - hy;
+    const liftDx = lift.x - px, liftDy = lift.y - py;
+    if (Math.abs(liftDx) + Math.abs(liftDy) < 4) fail(where + ': the lift barely moved (' + liftDx.toFixed(1) + ',' + liftDy.toFixed(1) + '), so carrying was not exercised');
+    if (Math.abs(heroDx - liftDx) > 1.5) fail(where + ': the lift moved ' + liftDx.toFixed(1) + 'px across and the hero ' + heroDx.toFixed(1) + 'px');
+    if (Math.abs(heroDy - liftDy) > 1.5) fail(where + ': the lift moved ' + liftDy.toFixed(1) + 'px down and the hero ' + heroDy.toFixed(1) + 'px');
+    if (m.plat !== lift) fail(where + ': the hero came off the lift while riding it');
+    if (m.dead) fail(where + ': the hero died while riding');
+    return where + ': carried ' + liftDx.toFixed(1) + ',' + liftDy.toFixed(1) + 'px with the lift, still aboard';
+  });
+
+  test('traversal', 'the clock warns once and then explains the death', (A) => {
+    const G = A.G;
+    const Sound = A.win.eval('Sound');
+    A.course(1, 1, 0);
+    G.mario.invuln = 9999;
+    G.warnedTime = false; G.time = 101; G.timeF = 0; G.timeUp = false;
+    let hurries = 0;
+    const realHurry = Sound.hurry;
+    Sound.hurry = function () { hurries++; return realHurry.apply(this, arguments); };
+    try {
+      A.run(36 * 3 + 4);                       // 36 frames to a tick, so this is 3 ticks
+      if (!G.warnedTime) fail('the clock passed 100 without arming the warning');
+      if (hurries !== 1) fail('the hurry cue fired ' + hurries + ' times, expected exactly 1');
+      if (!(G.time < 100)) fail('the clock did not advance (time=' + G.time + ')');
+      A.run(36 * 2);
+      if (hurries !== 1) fail('the hurry cue repeated (' + hurries + ' times); it is a one-off');
+
+      /* Running out used to kill with no explanation, and the death card looked
+         identical to a stomp. The flag is what the card reads. */
+      G.time = 1; G.timeF = 0;
+      for (let i = 0; i < 60 && !G.mario.dead; i++) A.stepSim();
+      if (!G.mario.dead) fail('the clock reached zero without killing the hero');
+      if (!G.timeUp) fail('the hero died on the clock without the timeUp flag the death card reads');
+      if (G.time !== 0) fail('the clock ended at ' + G.time + ', expected 0');
+    } finally {
+      Sound.hurry = realHurry;
+    }
+    return 'one warning at 100, no repeats, death at 0 with the reason recorded';
+  });
+
   /* ---------- runner ---------- */
   function loadFrame(doc, src) {
     return new Promise((resolve, reject) => {
