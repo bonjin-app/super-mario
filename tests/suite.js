@@ -1192,6 +1192,124 @@
       Array.from(roomIds).sort().join('/') + ') with ' + rewards + ' reachable rewards and clear exit lips';
   });
 
+  /* ================= the documented fixes ================= */
+  /* README records a list of bugs this game had and fixed. Exactly one of them (the
+     infinite 1UP) had a regression test; the rest were fixed, measured once, and left.
+     Those are the most valuable things in the file to guard, because each one is a
+     mistake this codebase has already proven it can make. */
+
+  test('fixes', 'a hundred coins is one life, and the counter wraps', (A) => {
+    const G = A.G;
+    const takeCoin = A.win.eval('takeCoin');
+    A.course(1, 1, 0);
+    const lives0 = G.lives, run0 = G.run.coins;
+    for (let i = 0; i < 100; i++) takeCoin(5, 10);
+    if (G.lives - lives0 !== 1) fail('100 coins granted ' + (G.lives - lives0) + ' lives, expected 1');
+    if (G.coins !== 0) fail('the coin counter sat at ' + G.coins + ' instead of wrapping to 0');
+    if (G.run.coins - run0 !== 100) fail("the run's coin total moved by " + (G.run.coins - run0) + ', expected 100');
+    for (let i = 0; i < 100; i++) takeCoin(5, 10);
+    if (G.lives - lives0 !== 2) fail('200 coins granted ' + (G.lives - lives0) + ' lives, expected 2');
+    return '100 coins -> 1 life, wraps to 0, run total keeps counting; 200 -> 2';
+  });
+
+  /* Quitting used to bank only pipoHigh, which the title's corner reads, and never the
+     ranking table -- so a run good enough for the top five that ended by quitting
+     vanished from it, while the corner kept a number with no context behind it. */
+  test('fixes', 'quitting banks the run, and a scoreless quit does not', (A) => {
+    const G = A.G, ls = A.win.localStorage;
+    const loadScores = A.win.eval('loadScores');
+    try { ls.removeItem('pipoScores'); ls.removeItem('pipoHigh'); } catch (e) {}
+    G.scores = [];
+    A.course(2, 3, 0);
+    G.score = 54321; G.run.coins = 7; G.run.foes = 3;
+    A.tap('p');
+    if (!G.paused) fail('quit is reached from the pause screen and p did not pause');
+    A.tap('q');
+    if (G.state !== 'title') fail('quitting left the game in state ' + G.state);
+    const rows = loadScores();
+    const mine = rows.find(e => e.s === 54321);
+    if (!mine) fail('the quit run never reached the table');
+    for (const [k, want] of [['w', 2], ['lv', 3], ['coins', 7], ['foes', 3]]) {
+      if (mine[k] !== want) fail('the banked row has ' + k + '=' + mine[k] + ', expected ' + want);
+    }
+    if (mine.hero !== A.chars[0].name) fail('the banked row names ' + mine.hero);
+    if (G.high !== 54321) fail('the corner number is ' + G.high + ', which no longer matches the table');
+    // and a run worth nothing must not take a row
+    const before = loadScores().length;
+    A.tap('Enter');
+    A.course(1, 1, 0);
+    G.score = 0;
+    A.tap('p'); A.tap('q');
+    const after = loadScores().length;
+    try { ls.removeItem('pipoScores'); ls.removeItem('pipoHigh'); } catch (e) {}
+    if (after !== before) fail('a scoreless quit changed the table from ' + before + ' to ' + after + ' rows');
+    return 'banked with full context (w2-3, ' + mine.hero + ', 7 coins, 3 foes); a 0-point quit adds nothing';
+  });
+
+  /* Running out of star while standing inside an enemy was instant death: the next step
+     judged an overlap that the star had been holding harmless. The tail of the
+     invincibility now hands over to the ordinary hit window. */
+  test('fixes', 'a star running out inside an enemy hands over instead of killing', (A) => {
+    const G = A.G;
+    const L = A.course(1, 1, 0);
+    const m = G.mario;
+    L.enemies.length = 0;
+    L.enemies.push({ type: 'puff', x: m.x, y: m.y, w: 12, h: 12, vx: 0, vy: 0, t: 0 });
+    m.star = 1; m.invuln = 0;
+    const lives0 = G.lives;
+    A.run(6);
+    if (G.mario.dead) fail('the hero died as the star ran out inside an enemy');
+    if (G.lives !== lives0) fail('a life was lost (' + lives0 + ' -> ' + G.lives + ')');
+    if (G.mario.star !== 0) fail('the star did not actually expire (star=' + G.mario.star + ')');
+    if (G.mario.invuln <= 0) fail('nothing took over from the star, so the next step can still kill');
+    return 'star expired inside an enemy, invuln took over at ' + G.mario.invuln + ' frames, no life lost';
+  });
+
+  /* The bridge collapse index was off by one and always left the far plank standing, so
+     the boss could still be followed across it. */
+  test('fixes', 'the collapsing bridge loses every plank', (A) => {
+    const G = A.G;
+    const updateCollapse = A.win.eval('updateCollapse');
+    const F = A.course(1, 4, 0);
+    if (!F.fortress) fail('1-4 is not a fortress');
+    const bx = F.bridgeX, bw = F.bridgeW;
+    if (!(bw > 1)) fail('the fortress reports a bridge only ' + bw + ' tiles wide');
+    let before = 0;
+    for (let i = 0; i < bw; i++) if (A.solid(F.map[13][bx + i])) before++;
+    if (before !== bw) fail('only ' + before + ' of ' + bw + ' planks were solid to begin with');
+    G.collapse = 1;
+    for (let i = 0; i < bw * 3 + 150; i++) {
+      if (G.state !== 'play') break;
+      updateCollapse();
+    }
+    const left = [];
+    for (let i = 0; i < bw; i++) if (A.solid(F.map[13][bx + i])) left.push(bx + i);
+    if (left.length) fail('planks still standing at columns ' + left.join(',') + ' (the far one is column ' + (bx + bw - 1) + ')');
+    return 'all ' + bw + ' planks from column ' + bx + ' cleared, including the far one';
+  });
+
+  /* Coral growth was dead code: the clearance it demanded around each pillar was wider
+     than the gaps the authored pairs leave, so nothing was ever placed and the count sat
+     frozen no matter how many laps in you were. */
+  test('fixes', 'coral deepens as the laps go on', (A) => {
+    const buildLevel = A.win.eval('buildLevel');
+    const counts = [];
+    for (const w of [3, 8, 13]) {
+      const L = buildLevel(3, w);
+      if (!L.water) fail('expected world ' + w + ' course 3 to be a water course');
+      let n = 0;
+      for (let y = 0; y < L.H; y++) for (let x = 0; x < L.W; x++) if (L.map[y][x] === 'B') n++;
+      counts.push({ w, n });
+    }
+    if (counts[0].n < 50) fail('only ' + counts[0].n + ' coral tiles in the first lap; the count looks broken, not frozen');
+    for (let i = 1; i < counts.length; i++) {
+      if (!(counts[i].n > counts[i - 1].n))
+        fail('coral did not grow from world ' + counts[i - 1].w + ' (' + counts[i - 1].n +
+             ') to world ' + counts[i].w + ' (' + counts[i].n + ') -- the growth is dead code again');
+    }
+    return counts.map(c => 'w' + c.w + '=' + c.n).join(' -> ');
+  });
+
   /* ---------- runner ---------- */
   function loadFrame(doc, src) {
     return new Promise((resolve, reject) => {
