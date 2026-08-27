@@ -1485,6 +1485,168 @@
     return 'flower -> big -> small -> death, 90 frames of grace at each step';
   });
 
+  /* ================= the fairness rules ================= */
+  /* The rules that decide how the game FEELS, and the ones a player would call unfair
+     if they broke: what a chain pays and when it resets, how many fireballs you get, a
+     kicked shell clearing a row, a cannon that does not shoot you in the back, and a
+     flame that announces itself and never erupts under a hero already committed to a
+     jump. All documented in README, none of it asserted.
+
+     Setting these up meant measuring three more traps out of the way, all mine:
+       - a shell is kicked by STOMPING it, not by walking into it, so a side contact
+         does nothing at all and reads as "the chain is broken".
+       - placing an enemy at an arbitrary column can drop it inside terrain, and the
+         de-overlap then throws the hero 41px into the air before anything collides.
+         The test finds a genuinely open stretch of flat ground first.
+       - updateMario runs BEFORE updateEnemies, so a hero pinned at a height that
+         gravity can reach the deck from is already `onGround` by the time the blaze
+         reads it. It has to be high enough that one step cannot land it. */
+  function openStretch(A, width) {
+    for (let x = 6; x < 120; x++) {
+      let ok = true;
+      for (let d = 0; d <= width && ok; d++) {
+        if (!A.solid(A.cellAt(x + d, 13))) ok = false;
+        for (let y = 8; y <= 12; y++) if (A.solid(A.cellAt(x + d, y))) ok = false;
+      }
+      if (ok) return x;
+    }
+    return -1;
+  }
+
+  test('rules', 'a chain pays the ladder in order and resets on landing', (A) => {
+    const G = A.G;
+    const bump = A.win.eval('bumpCombo');
+    const ladder = A.win.eval('COMBO_PTS');
+    A.course(1, 1, 0);
+    G.combo = 0; G.lives = 9;
+    const paid = [];
+    for (let i = 0; i < ladder.length + 3; i++) paid.push(bump());
+    for (let i = 0; i < ladder.length; i++) {
+      if (paid[i] !== ladder[i]) fail('stomp ' + (i + 1) + ' paid ' + paid[i] + ', ladder says ' + ladder[i]);
+    }
+    for (let i = ladder.length; i < paid.length; i++) {
+      if (paid[i] !== ladder[ladder.length - 1])
+        fail('past the top of the ladder a stomp paid ' + paid[i] + ', expected it to stay at ' + ladder[ladder.length - 1]);
+    }
+    /* and the whole point of the ladder: it counts within ONE jump. Landing ends it,
+       which is what stops a player from farming a row of walkers from the ground. */
+    const m = G.mario;
+    G.combo = 5;
+    m.onGround = false; m.vy = 3;
+    m.y = 12 * A.T - m.h - 6; m.py = m.y;
+    A.run(6);
+    if (!m.onGround) fail('the hero never landed, so the reset was not exercised');
+    if (G.combo !== 0) fail('landing left the combo at ' + G.combo + ', expected 0');
+    return 'ladder ' + ladder.join('/') + ', capped, and zeroed on landing';
+  });
+
+  test('rules', 'two fireballs at a time, no more', (A) => {
+    const G = A.G;
+    A.course(1, 1, 0);
+    const m = G.mario;
+    m.big = true; m.fire = true; m.h = 30; m.invuln = 9999; m.dead = false;
+    G.balls.length = 0;
+    const seen = [];
+    for (let i = 0; i < 6; i++) { A.tap('f'); seen.push(G.balls.length); }
+    if (seen[0] !== 1) fail('the first press produced ' + seen[0] + ' fireballs');
+    if (Math.max(...seen) > 2) fail('there were ' + Math.max(...seen) + ' fireballs in the air at once, the cap is 2');
+    if (seen[seen.length - 1] !== 2) fail('after six presses there are ' + seen[seen.length - 1] + ' in the air, expected the cap of 2');
+    // and a hero without the flower gets none
+    m.fire = false;
+    G.balls.length = 0;
+    A.tap('f');
+    if (G.balls.length !== 0) fail('a hero with no flower threw ' + G.balls.length + ' fireballs');
+    return 'presses -> ' + seen.join(',') + ' (cap 2), none without the flower';
+  });
+
+  test('rules', 'a kicked shell clears the row', (A) => {
+    const G = A.G, T = A.T;
+    const L = A.course(1, 1, 0);
+    const col = openStretch(A, 8);
+    if (col < 0) fail('found no open stretch of flat ground to set this up on');
+    L.enemies.length = 0;
+    const shell = { type: 'shell', x: col * T, y: 13 * T - 10, w: 12, h: 10, vx: 0, vy: 0, t: 0 };
+    shell.px = shell.x; shell.py = shell.y;
+    const victims = [];
+    for (let i = 1; i <= 3; i++) {
+      const v = { type: 'puff', x: (col + i * 2) * T, y: 13 * T - 12, w: 12, h: 12, vx: 0, vy: 0, t: 0 };
+      v.px = v.x; v.py = v.y;
+      victims.push(v); L.enemies.push(v);
+    }
+    L.enemies.push(shell);
+    G.camera = Math.max(0, shell.x - 100);
+    const m = G.mario;
+    m.big = false; m.fire = false; m.h = 16; m.invuln = 0; m.star = 0; m.dead = false;
+    m.x = shell.x - 4; m.px = m.x; m.vx = 0;
+    m.y = shell.y - m.h + 3; m.py = shell.y - m.h - 6; m.vy = 2;   // stomping it is the kick
+    A.K.jump = false;
+    const s0 = G.score;
+    A.run(1);
+    if (shell.type !== 'shellMove') fail('stomping the shell left it as "' + shell.type + '", expected shellMove');
+    if (!(shell.vx > 2)) fail('the kicked shell is moving at ' + shell.vx + ', too slow to chain (needs > 2)');
+    A.run(80);
+    const killed = victims.filter(v => v.flat).length;
+    if (killed !== victims.length) fail('the shell killed ' + killed + ' of ' + victims.length + ' enemies in its path');
+    if (G.mario.dead) fail('the hero died to its own shell');
+    return 'stomp -> shellMove at ' + shell.vx + ', ' + killed + '/' + victims.length +
+           ' cleared, ' + (G.score - s0) + ' points';
+  });
+
+  test('rules', 'a cannon fires ahead of you, never at your back', (A) => {
+    const G = A.G;
+    const L = A.course(1, 1, 0);
+    const cannon = (L.enemies || []).find(e => e.type === 'cannon');
+    if (!cannon) fail('1-1 has no cannon to test');
+    const bolts = (dx) => {
+      L.enemies.length = 0; L.enemies.push(cannon);
+      cannon.t = 0;
+      G.camera = Math.max(0, cannon.x - 140);
+      const m = G.mario;
+      m.x = cannon.x + dx; m.px = m.x; m.y = 12 * A.T; m.py = m.y;
+      m.invuln = 9999; m.dead = false;
+      for (let i = 0; i < cannon.cool * 2 + 2; i++) A.stepSim();
+      return (L.enemies || []).filter(e => e.type === 'bolt').length;
+    };
+    const ahead = bolts(-120), justPast = bolts(20), behind = bolts(80);
+    if (ahead < 1) fail('a cannon with the hero 120px ahead of it fired ' + ahead + ' times');
+    if (behind !== 0) fail('a cannon fired ' + behind + ' times at a hero 80px past it; shooting your back is noise, not a threat');
+    return 'ahead ' + ahead + ', just past ' + justPast + ', behind ' + behind;
+  });
+
+  test('rules', 'a blaze announces itself and holds fire at a committed jump', (A) => {
+    const G = A.G, T = A.T;
+    const L = A.course(1, 4, 0);
+    const blaze = (L.enemies || []).find(e => e.type === 'blaze');
+    if (!blaze) fail('1-4 has no blaze to test');
+    const trial = (airborne) => {
+      L.enemies.length = 0; L.enemies.push(blaze);
+      blaze.t = 0; blaze.warn = 0; blaze.up = false; blaze.vy = 0; blaze.y = 14 * T;
+      G.camera = Math.max(0, blaze.x - 140);
+      const m = G.mario;
+      let warnFrames = 0, launched = false;
+      for (let i = 0; i < blaze.period + 40; i++) {
+        m.x = blaze.x; m.px = m.x;
+        /* high and rising for the airborne case: updateMario runs first, so a hero
+           pinned within gravity's reach of the deck is already grounded by the time
+           the blaze reads it */
+        if (airborne) { m.y = 7 * T; m.py = m.y - 2; m.vy = -1; }
+        else { m.y = 13 * T - m.h; m.py = m.y; m.vy = 0; m.onGround = true; }
+        m.invuln = 9999; m.dead = false; m.star = 0;
+        A.stepSim();
+        if (blaze.warn > 0) warnFrames++;
+        if (blaze.up) launched = true;
+      }
+      return { warnFrames, launched };
+    };
+    const grounded = trial(false);
+    if (!grounded.launched) fail('a blaze never launched at a hero standing at its lip');
+    if (grounded.warnFrames < 15) fail('the launch was announced for only ' + grounded.warnFrames + ' frames; the rule is 20');
+    const air = trial(true);
+    if (air.launched) fail('a blaze erupted under a hero already in the air over its pool -- that is a coin flip, not a hazard');
+    if (air.warnFrames !== 0) fail('it began winding up at an airborne hero (' + air.warnFrames + ' frames)');
+    return 'grounded: ' + grounded.warnFrames + ' warning frames then a launch; airborne over the pool: no wind-up, no launch';
+  });
+
   /* ---------- runner ---------- */
   function loadFrame(doc, src) {
     return new Promise((resolve, reject) => {
