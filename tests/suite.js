@@ -1310,6 +1310,181 @@
     return counts.map(c => 'w' + c.w + '=' + c.n).join(' -> ');
   });
 
+  /* ================= the damage matrix ================= */
+  /* README states, per enemy, whether it can be stomped and whether fire kills it. That
+     table is the game's combat contract and none of it was asserted -- a change to one
+     branch of updateEnemies could quietly make SPIKO stompable or the cannon barrel
+     lethal, and no invariant, soak or fuzz would notice, because nothing about it is
+     invalid. It is just wrong.
+
+     Enemies are harvested from real built courses rather than constructed here. A stub
+     with the fields I happen to remember is a stub that drifts; a puff taken out of 1-1
+     is the puff the player meets. Three setup traps had to be measured out of the way
+     first, each the same shape as a mistake this project has already recorded:
+       - a glider's y is recomputed from a sine every step, so its BUILD-TIME y is not
+         where it will be. The run has to settle first, then aim.
+       - a ball placed inside a chomp's pipe dies on the pipe tile before it ever
+         reaches the chomp, which read as "fire does nothing to chomp".
+       - the hero parked next to an enemy can pick up a coin, which read as a stomp
+         worth 400 instead of 200. Score is only asserted where the setup controls it. */
+  function harvest(A) {
+    const G = A.G;
+    const want = ['puff', 'shelly', 'spiko', 'flappy', 'glider', 'chomp', 'cannon', 'blaze', 'fish'];
+    const found = {};
+    for (let w = 1; w <= 12 && Object.keys(found).length < want.length; w++) {
+      for (let lv = 1; lv <= 4; lv++) {
+        A.course(w, lv, 0);
+        for (const e of (G.level.enemies || [])) {
+          if (want.includes(e.type) && !found[e.type]) found[e.type] = { w, lv };
+        }
+      }
+    }
+    return found;
+  }
+  /* isolate one enemy of a type in its own course, awake, with the hero out of the way */
+  function isolate(A, where, type) {
+    const G = A.G;
+    A.course(where.w, where.lv, 0);
+    const e = (G.level.enemies || []).find(x => x.type === type);
+    if (!e) fail('a ' + type + ' was expected in ' + where.w + '-' + where.lv + ' and is not there');
+    G.level.enemies.length = 0;
+    G.level.enemies.push(e);
+    G.camera = Math.max(0, e.x - 120);
+    const m = G.mario;
+    m.x = 3 * A.T; m.y = 12 * A.T; m.px = m.x; m.py = m.y; m.vx = 0; m.vy = 0;
+    m.big = true; m.fire = true; m.h = 30; m.star = 0; m.dead = false;
+    m.invuln = 9999;                       // parked and untouchable while we set up
+    return e;
+  }
+
+  test('combat', 'fire kills what it should and nothing it should not', (A) => {
+    const G = A.G;
+    const where = harvest(A);
+    /* what README's table says: fire is the answer to the ones that cannot be stomped,
+       it turns a shelly into a shell rather than flattening it, and it is no answer at
+       all to a blaze (which is made of fire) or the boss (which absorbs it). */
+    const EXPECT = {
+      puff:   { flat: true,  becomes: 'puff',   score: 200 },
+      shelly: { flat: false, becomes: 'shell',  score: 200 },
+      spiko:  { flat: true,  becomes: 'spiko',  score: 400 },
+      flappy: { flat: true,  becomes: 'flappy', score: 200 },
+      chomp:  { flat: true,  becomes: 'chomp',  score: 400 },
+      glider: { flat: true,  becomes: 'glider', score: 200 },
+      fish:   { flat: true,  becomes: 'fish',   score: 200 },
+      blaze:  { flat: false, becomes: 'blaze',  score: 0 }
+    };
+    const rows = [];
+    for (const type of Object.keys(EXPECT)) {
+      if (!where[type]) fail('no course in worlds 1-12 contains a ' + type);
+      const e = isolate(A, where[type], type);
+      // a chomp inside its pipe would kill the ball on the pipe, not on the chomp
+      if (type === 'chomp') { e.up = true; e.y = (e.homeY === undefined ? e.y : e.homeY) - 16; e.py = e.y; }
+      if (type === 'glider' || type === 'fish') A.run(1);      // let the sine settle
+      const want = EXPECT[type];
+      const s0 = G.score;
+      G.balls.length = 0;
+      G.balls.push({ x: e.x + 2, y: e.y + 2, w: 8, h: 8, vx: 0, vy: 0, t: 0, px: e.x + 2, py: e.y + 2 });
+      A.run(2);
+      const gained = G.score - s0;
+      if (!!e.flat !== want.flat) fail(type + ': flat=' + !!e.flat + ', expected ' + want.flat);
+      if (e.type !== want.becomes) fail(type + ' became "' + e.type + '", expected "' + want.becomes + '"');
+      if (gained !== want.score) fail(type + ' scored ' + gained + ', expected ' + want.score);
+      rows.push(type + (want.flat ? ' dies' : (want.becomes === 'shell' ? ' shells' : ' IMMUNE')) + '/' + gained);
+    }
+    // the boss absorbs the shot with a flash instead of ignoring it or dying to it
+    A.course(1, 4, 0);
+    const BS = G.level.boss;
+    if (!BS) fail('1-4 has no boss');
+    const m = G.mario;
+    m.big = true; m.fire = true; m.h = 30; m.invuln = 9999; m.dead = false;
+    G.camera = Math.max(0, BS.x - 120);
+    const s1 = G.score;
+    G.balls.length = 0;
+    G.balls.push({ x: BS.x + 2, y: BS.y + 2, w: 8, h: 8, vx: 0, vy: 0, t: 0, px: BS.x + 2, py: BS.y + 2 });
+    A.run(2);
+    if (BS.dead) fail('fire killed the boss; the bridge is supposed to be the only answer');
+    if (!(BS.hit > 0)) fail('fire passed through the boss without registering, which reads as a bug');
+    if (G.score !== s1) fail('hitting the boss with fire scored ' + (G.score - s1) + ', expected 0');
+    if (G.balls.length !== 0) fail('the boss did not absorb the ball');
+    return rows.join(' ') + ' | boss absorbs (hit=' + BS.hit + ', 0 points)';
+  });
+
+  test('combat', 'stomping works on exactly the enemies it should', (A) => {
+    const G = A.G;
+    const where = harvest(A);
+    /* hurt = the hero was big and got shrunk with the 90-frame window; unhurt = the
+       hero is untouched. Using a big hero makes both outcomes observable in one step
+       without a death and a respawn in the middle. */
+    const EXPECT = {
+      puff:   { dies: true,  becomes: 'puff',   hurt: false },
+      shelly: { dies: false, becomes: 'shell',  hurt: false },   // stomp shells it
+      flappy: { dies: true,  becomes: 'flappy', hurt: false },
+      glider: { dies: true,  becomes: 'glider', hurt: false },
+      spiko:  { dies: false, becomes: 'spiko',  hurt: true  },   // the spines hurt
+      chomp:  { dies: false, becomes: 'chomp',  hurt: true  },
+      cannon: { dies: false, becomes: 'cannon', hurt: false },   // the barrel is harmless
+      fish:   { dies: false, becomes: 'fish',   hurt: true  }    // nothing is stompable in water
+    };
+    /* blaze is deliberately absent. It lives in a lava pool, so any hero position that
+       touches it also has its feet over lava -- which kills outright, star or not. A
+       contact test there measures the lava rule, not the blaze rule. Fire immunity is
+       what distinguishes a blaze and that is asserted above. */
+    const rows = [];
+    for (const type of Object.keys(EXPECT)) {
+      if (!where[type]) fail('no course in worlds 1-12 contains a ' + type);
+      const e = isolate(A, where[type], type);
+      if (type === 'chomp') { e.up = true; e.y = (e.homeY === undefined ? e.y : e.homeY) - 16; e.py = e.y; }
+      if (type === 'glider' || type === 'fish') A.run(1);
+      const m = G.mario;
+      m.invuln = 0; m.fire = false;
+      m.x = e.x; m.vx = 0;
+      m.y = e.y - m.h + 4;          // feet just inside its top
+      m.py = e.y - m.h - 6;         // and above its shoulders a step ago
+      m.vy = 2;                     // falling, which is what makes it a stomp
+      A.K.jump = false;
+      const want = EXPECT[type];
+      A.run(1);
+      if (!!e.flat !== want.dies) fail(type + ': enemy flat=' + !!e.flat + ', expected ' + want.dies);
+      if (e.type !== want.becomes) fail(type + ' became "' + e.type + '", expected "' + want.becomes + '"');
+      const hurt = !m.big || m.dead;
+      if (hurt !== want.hurt) fail(type + ': hero hurt=' + hurt + ' (big=' + m.big + ' dead=' + !!m.dead + '), expected hurt=' + want.hurt);
+      if (want.hurt && !m.dead && m.invuln !== 90) fail(type + ' left the hero with invuln=' + m.invuln + ', expected 90');
+      rows.push(type + (want.hurt ? ' HURTS' : (want.dies ? ' stomps' : ' safe')));
+    }
+    return rows.join(' ');
+  });
+
+  /* Damage is three stages here, not the original's two: fire -> big -> small -> death.
+     The extra stage exists to make keeping a powerup worth something. */
+  test('combat', 'damage costs one stage at a time', (A) => {
+    const G = A.G;
+    const hurtOrKill = A.win.eval('hurtOrKill');
+    A.course(1, 1, 0);
+    const m = G.mario;
+    m.big = true; m.fire = true; m.h = 30; m.star = 0; m.invuln = 0; m.dead = false;
+    const lives0 = G.lives;
+
+    hurtOrKill(m);
+    if (!m.big || m.fire) fail('the first hit should cost the flower and leave the hero big (big=' + m.big + ' fire=' + m.fire + ')');
+    if (m.invuln !== 90) fail('invuln after the first hit was ' + m.invuln + ', expected 90');
+
+    m.invuln = 0;
+    hurtOrKill(m);
+    if (m.big) fail('the second hit should shrink the hero');
+    if (m.h !== 16) fail('a shrunk hero is ' + m.h + 'px tall, expected 16');
+    if (m.invuln !== 90) fail('invuln after the shrink was ' + m.invuln);
+    if (G.lives !== lives0) fail('a life was spent before the hero was small');
+
+    // and the window really does protect: a hit inside it costs nothing
+    hurtOrKill(m);
+    if (m.dead) fail('a hit inside the invulnerability window killed the hero');
+
+    m.invuln = 0;
+    hurtOrKill(m);
+    if (!m.dead) fail('the third hit on a small hero should be fatal');
+    return 'flower -> big -> small -> death, 90 frames of grace at each step';
+  });
+
   /* ---------- runner ---------- */
   function loadFrame(doc, src) {
     return new Promise((resolve, reject) => {
