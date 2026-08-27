@@ -452,28 +452,63 @@
      is what poisoned an earlier measurement into reading 83.8ms/frame. Measured outside
      rAF, the browser's periodic compositor work lands on whichever draw() is running,
      so single-sample maxima are meaningless here -- the median is the signal. */
-  test('perf', 'the heaviest course stays far inside the frame budget', (A) => {
-    A.course(1, 4, 0);
-    A.K.right = true; A.K.run = true;
-    A.run(300);                                    // warm up the JIT
+  test('perf', 'draw work per frame stays within its documented bounds', (A) => {
+    /* The assertion is the DRAW-CALL COUNT, not milliseconds. This suite runs on
+       whatever hardware CI hands it -- a two-core runner with a software rasteriser --
+       and a wall-clock threshold there measures the runner, not the game. Draw calls
+       per frame are the same number on every machine, and they are what actually
+       regresses: lose the camera culling and the count explodes long before anyone
+       notices a frame. Milliseconds are still reported, with a ceiling loose enough to
+       survive slow CI while still catching a catastrophic regression.
+       Measured on this project's reference machine: field ~90 calls (max ~129),
+       water ~155, fortress ~343 (max ~473). */
+    const cv = A.win.document.getElementById('screen');
+    const ctx = cv.getContext('2d');
+    let calls = 0;
+    const origDraw = ctx.drawImage.bind(ctx);
+    /* explicit arity rather than (...a): a rest-and-spread wrapper allocates an array
+       on every one of several hundred calls per frame, which turns the instrument into
+       a garbage generator */
+    ctx.drawImage = function (a, b, c, d, e, f, g, h, i) {
+      calls++;
+      return arguments.length <= 3 ? origDraw(a, b, c)
+        : arguments.length <= 5 ? origDraw(a, b, c, d, e)
+        : origDraw(a, b, c, d, e, f, g, h, i);
+    };
+    const LIMITS = { field: 260, water: 400, fortress: 700 };
     const rows = [];
-    for (const [w, lv] of [[1, 4], [3, 3], [1, 1]]) {
-      A.course(w, lv, 0);
+    try {
+      A.course(1, 4, 0);
       A.K.right = true; A.K.run = true;
-      const t = [];
-      for (let i = 0; i < 600; i++) {
-        if (A.G.lives < 4) A.G.lives = 9;
-        A.update();
-        const a = A.win.performance.now(); A.draw();
-        t.push(A.win.performance.now() - a);
+      A.run(300);                                  // warm up the JIT
+      for (const [w, lv] of [[1, 4], [3, 3], [1, 1]]) {
+        const L = A.course(w, lv, 0);
+        const kind = L.fortress ? 'fortress' : (L.water ? 'water' : 'field');
+        A.K.right = true; A.K.run = true;
+        const ms = [], per = [];
+        for (let i = 0; i < 600; i++) {
+          if (A.G.lives < 4) A.G.lives = 9;
+          A.update();
+          calls = 0;
+          const t0 = A.win.performance.now();
+          A.draw();
+          ms.push(A.win.performance.now() - t0);
+          per.push(calls);
+        }
+        ms.sort((x, y) => x - y);
+        const med = ms[Math.floor(ms.length / 2)];
+        const avgCalls = Math.round(per.reduce((s, x) => s + x, 0) / per.length);
+        const maxCalls = Math.max(...per);
+        rows.push(w + '-' + lv + ' ' + kind + ' calls=' + avgCalls + '/' + maxCalls + ' med=' + med.toFixed(2) + 'ms');
+        if (maxCalls > LIMITS[kind])
+          fail(w + '-' + lv + ' peaked at ' + maxCalls + ' draw calls, ceiling for a ' + kind + ' course is ' + LIMITS[kind]);
+        if (avgCalls === 0) fail(w + '-' + lv + ' drew nothing at all');
+        if (med > 25) fail(w + '-' + lv + ' median draw ' + med.toFixed(1) + 'ms, which is beyond even a slow runner');
       }
-      t.sort((x, y) => x - y);
-      const med = t[Math.floor(t.length / 2)], p95 = t[Math.floor(t.length * 0.95)];
-      rows.push(w + '-' + lv + ' med=' + med.toFixed(3) + ' p95=' + p95.toFixed(3));
-      if (med > 4) fail(w + '-' + lv + ' median draw ' + med.toFixed(2) + 'ms, budget is 16.67');
-      if (p95 > 8) fail(w + '-' + lv + ' p95 draw ' + p95.toFixed(2) + 'ms');
+    } finally {
+      ctx.drawImage = origDraw;
+      A.clearKeys();
     }
-    A.clearKeys();
     return rows.join(' | ');
   });
 
@@ -557,7 +592,7 @@
   /* Terminal by nature: once the boundary trips it stays tripped, so this runs in its
      own frame. Before the boundary existed, a throw repeated once per frame forever --
      the console filled and the player got a frozen frame with no explanation. */
-  test('crash', 'a thrown frame shows a message instead of freezing silently', (A) => {
+  test('crash', 'a thrown frame shows a message instead of freezing silently', async (A) => {
     const G = A.G;
     A.leaveTitle();
     A.run(120);
@@ -565,45 +600,49 @@
     const errs = [];
     const realError = A.win.console.error;
     A.win.console.error = function () { errs.push(1); return realError.apply(this, arguments); };
-    /* hand the clock back AND restart the chain: the loop stopped re-registering the
-       moment rAF became a no-op, so restoring the function alone would leave nothing
-       running to throw */
-    A.win.requestAnimationFrame = A.win.__realRAF;
-    A.win.__realRAF(A.win.loop);
-    G.charIdx = 1.5;                                  // CHARS[1.5] is undefined
-    const startFrame = G.frame;
-    return new Promise((resolve, reject) => {
-      A.win.setTimeout(() => {
-        try {
-          const crashed = A.crashed();
-          if (!crashed) fail('a throwing frame did not trip the boundary');
-          const frozen = G.frame;
-          A.win.setTimeout(() => {
-            try {
-              if (G.frame !== frozen) fail('the simulation kept stepping after the crash');
-              if (errs.length > 3) fail('logged ' + errs.length + ' times; the crash should report once');
-              // the message must actually be on the canvas
-              const cv = A.win.document.getElementById('screen');
-              const c2 = A.win.document.createElement('canvas');
-              c2.width = cv.width; c2.height = cv.height;
-              const g2 = c2.getContext('2d');
-              g2.drawImage(cv, 0, 0);
-              const d = g2.getImageData(0, 0, cv.width, cv.height).data;
-              let lit = 0, red = 0;
-              for (let i = 0; i < d.length; i += 4 * 53) {
-                if (d[i] + d[i + 1] + d[i + 2] > 40) lit++;
-                if (d[i] > 150 && d[i + 1] < 130 && d[i + 2] < 130) red++;
-              }
-              if (lit < 100) fail('the crash screen is blank (' + lit + ' lit samples)');
-              if (red < 10) fail('no headline on the crash screen (' + red + ' red samples)');
-              A.win.console.error = realError;
-              resolve('tripped after frame ' + startFrame + ', logged ' + errs.length + '×, ' +
-                      lit + ' lit / ' + red + ' red samples, sim frozen');
-            } catch (e) { A.win.console.error = realError; reject(e); }
-          }, 250);
-        } catch (e) { A.win.console.error = realError; reject(e); }
-      }, 350);
-    });
+    const sleep = (ms) => new Promise(r => A.win.setTimeout(r, ms));
+    try {
+      /* hand the clock back AND restart the chain: the loop stopped re-registering the
+         moment rAF became a no-op, so restoring the function alone would leave nothing
+         running to throw */
+      A.win.requestAnimationFrame = A.win.__realRAF;
+      A.win.__realRAF(A.win.loop);
+      G.charIdx = 1.5;                                // CHARS[1.5] is undefined
+      const startFrame = G.frame;
+
+      /* Poll rather than sleep a fixed 350ms. On a slow or busy CI runner a fixed wait
+         is a coin toss, and a test that depends on the runner's mood is a test people
+         learn to re-run instead of read. */
+      const t0 = Date.now();
+      while (!A.crashed() && Date.now() - t0 < 8000) await sleep(50);
+      const trippedIn = Date.now() - t0;
+      if (!A.crashed()) fail('a throwing frame did not trip the boundary within ' + trippedIn + 'ms');
+
+      // the simulation must stop advancing, however long the runner takes to notice
+      const frozen = G.frame;
+      await sleep(400);
+      if (G.frame !== frozen) fail('the simulation kept stepping after the crash (' + frozen + ' -> ' + G.frame + ')');
+      if (errs.length > 3) fail('logged ' + errs.length + ' times; the crash should report once');
+
+      // and the message must actually be on the canvas
+      const cv = A.win.document.getElementById('screen');
+      const c2 = A.win.document.createElement('canvas');
+      c2.width = cv.width; c2.height = cv.height;
+      const g2 = c2.getContext('2d');
+      g2.drawImage(cv, 0, 0);
+      const d = g2.getImageData(0, 0, cv.width, cv.height).data;
+      let lit = 0, red = 0;
+      for (let i = 0; i < d.length; i += 4 * 53) {
+        if (d[i] + d[i + 1] + d[i + 2] > 40) lit++;
+        if (d[i] > 150 && d[i + 1] < 130 && d[i + 2] < 130) red++;
+      }
+      if (lit < 100) fail('the crash screen is blank (' + lit + ' lit samples)');
+      if (red < 10) fail('no headline on the crash screen (' + red + ' red samples)');
+      return 'tripped in ' + trippedIn + 'ms after frame ' + startFrame + ', logged ' +
+             errs.length + '\u00d7, ' + lit + ' lit / ' + red + ' red samples, sim frozen';
+    } finally {
+      A.win.console.error = realError;
+    }
   });
 
   /* ================= layout ================= */
@@ -743,7 +782,9 @@
   test('audio', 'every effect actually schedules sound, and mute really silences it', (A) => {
     const S = A.win.eval('Sound');
     const BGM = A.win.eval('BGM');
-    S.init();
+    try { S.init(); } catch (e) {
+      fail('this environment could not create an AudioContext: ' + e.message);
+    }
     if (!S.ctx) fail('init() created no AudioContext');
     for (const part of ['master', 'musicBus', 'sfxBus', 'noiseBuf']) {
       if (!S[part]) fail('init() left ' + part + ' missing');

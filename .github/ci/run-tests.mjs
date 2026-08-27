@@ -26,6 +26,10 @@ try {
   await page.waitForFunction(() => window.__PIPO_RESULT, null, { timeout: TIMEOUT_MS });
   result = await page.evaluate(() => window.__PIPO_RESULT);
 } catch (err) {
+  /* A harness-level failure needs to be visible without log access too, or a red run
+     says nothing to anyone who cannot download the log. */
+  const first = noise.length ? ' | first page error: ' + noise[0].replace(/\r?\n/g, ' ').slice(0, 200) : '';
+  console.log('::error title=regression suite did not run::' + err.message.replace(/\r?\n/g, ' ').slice(0, 300) + first);
   console.error('the suite never produced a result: ' + err.message);
   if (noise.length) console.error('page console:\n  ' + noise.slice(0, 20).join('\n  '));
   await browser.close();
@@ -43,6 +47,32 @@ for (const r of result.results) {
 }
 console.log('');
 console.log(result.passed + '/' + result.total + ' passed' + (result.failed ? ', ' + result.failed + ' FAILED' : ''));
+
+/* Emit a GitHub annotation per failure. Job logs need admin rights on the repository,
+   so a failure that only exists in the log is invisible to anyone without them -- which
+   is exactly the position this project was in when the first CI run went red and the
+   reason could not be read. Annotations ride on the check run and are readable by
+   anyone who can see the repo. */
+const oneLine = (s) => String(s == null ? '' : s).replace(/\r?\n/g, ' ').slice(0, 400);
+for (const r of result.results) {
+  if (r.pass) continue;
+  console.log('::error title=' + oneLine(r.group + '/' + r.name) + '::' + oneLine(r.detail));
+}
+if (!result.failed) {
+  console.log('::notice title=regression suite::' + result.passed + '/' + result.total + ' checks passed');
+}
+
+/* And a job summary, for the humans who do have log access. */
+if (process.env.GITHUB_STEP_SUMMARY) {
+  const { appendFileSync } = await import('node:fs');
+  const rows = result.results
+    .map((r) => '| ' + (r.pass ? '✅' : '❌') + ' | `' + r.group + '` | ' + r.name + ' | ' + r.ms + 'ms | ' + oneLine(r.detail).replace(/\|/g, '\\|') + ' |')
+    .join('\n');
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+    '## PIPO JUMP regression suite\n\n' +
+    '**' + result.passed + '/' + result.total + ' passed' + (result.failed ? ', ' + result.failed + ' failed' : '') + '**\n\n' +
+    '| | group | check | time | detail |\n|---|---|---|---|---|\n' + rows + '\n');
+}
 
 /* Console errors are reported but do not by themselves fail the run: the crash-boundary
    test deliberately provokes one, and the suite asserts the count itself. */
