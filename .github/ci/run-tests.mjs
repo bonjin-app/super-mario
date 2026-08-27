@@ -9,7 +9,10 @@
 import { chromium } from 'playwright';
 
 const url = process.argv[2] || 'http://127.0.0.1:8000/tests/index.html';
-const TIMEOUT_MS = Number(process.env.SUITE_TIMEOUT_MS || 300000);
+/* 300s was not enough: the first CI run timed out there. A runner with a software
+   rasteriser is several times slower than a development machine, so the ceiling is
+   generous and the suite itself was made cheap (see stepSim in tests/suite.js). */
+const TIMEOUT_MS = Number(process.env.SUITE_TIMEOUT_MS || 900000);
 
 const browser = await chromium.launch();
 const page = await browser.newPage();
@@ -27,9 +30,15 @@ try {
   result = await page.evaluate(() => window.__PIPO_RESULT);
 } catch (err) {
   /* A harness-level failure needs to be visible without log access too, or a red run
-     says nothing to anyone who cannot download the log. */
+     says nothing to anyone who cannot download the log. Progress is included so a
+     timeout says WHERE it stopped -- slow and stuck look identical otherwise. */
+  let progress = null;
+  try { progress = await page.evaluate(() => window.PIPO_PROGRESS || null); } catch (e) { /* page may be gone */ }
+  const where = progress
+    ? ' | reached ' + progress.done + '/' + progress.total + ' checks, last: ' + progress.last
+    : ' | no progress was reported at all';
   const first = noise.length ? ' | first page error: ' + noise[0].replace(/\r?\n/g, ' ').slice(0, 200) : '';
-  console.log('::error title=regression suite did not run::' + err.message.replace(/\r?\n/g, ' ').slice(0, 300) + first);
+  console.log('::error title=regression suite did not run::' + err.message.replace(/\r?\n/g, ' ').slice(0, 300) + where + first);
   console.error('the suite never produced a result: ' + err.message);
   if (noise.length) console.error('page console:\n  ' + noise.slice(0, 20).join('\n  '));
   await browser.close();

@@ -9,7 +9,7 @@ on:
 jobs:
   suite:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +31,9 @@ jobs:
       # earlier step does not reliably survive into the next one.
       - name: Run the regression suite
         working-directory: .github/ci
+        env:
+          # a software-rasteriser runner is several times slower than a dev machine
+          SUITE_TIMEOUT_MS: '900000'
         run: |
           python3 -m http.server 8000 --bind 127.0.0.1 --directory "$GITHUB_WORKSPACE" >/dev/null 2>&1 &
           for i in $(seq 1 30); do

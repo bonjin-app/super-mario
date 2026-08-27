@@ -59,8 +59,17 @@
       down: (k) => ev('keydown', k),
       up: (k) => ev('keyup', k),
       tap: (k) => { ev('keydown', k); ev('keyup', k); },
+      /* Two kinds of step, because draw() costs 10-30x what update() does -- a few
+         hundred canvas operations against a handful of arithmetic ones -- and almost
+         nothing this suite asserts needs a rendered frame. Measured: the heavy loops
+         issue ~188,000 draw() calls, which is invisible on a GPU and is the entire
+         runtime on a CI runner with a software rasteriser. So invariant and geometry
+         work uses stepSim(), and rendering is covered where it is the subject (boot,
+         crash, perf) plus a periodic sample inside the soak. */
       step() { A.update(); A.draw(); },
-      run(n) { for (let i = 0; i < n; i++) A.step(); },
+      stepSim() { A.update(); },
+      run(n) { for (let i = 0; i < n; i++) A.update(); },
+      runDraw(n) { for (let i = 0; i < n; i++) A.step(); },
       clearKeys() { const K = A.K; K.left = K.right = K.run = K.jump = K.down = false; },
       /* start a specific course, out of 'ready', with a full stock of lives */
       course(world, lv, charIdx) {
@@ -147,7 +156,7 @@
       const x0 = A.G.mario.x;
       A.K.right = true; A.K.run = c.run;
       let maxVx = 0;
-      for (let i = 0; i < 240; i++) { A.step(); maxVx = Math.max(maxVx, Math.abs(A.G.mario.vx)); }
+      for (let i = 0; i < 240; i++) { A.stepSim(); maxVx = Math.max(maxVx, Math.abs(A.G.mario.vx)); }
       const moved = A.G.mario.x - x0;
       A.clearKeys();
       const who = A.chars[c.ci].name + ' ' + c.label;
@@ -168,7 +177,7 @@
     A.clearKeys();
     const x0 = A.G.mario.x;
     let stopStep = -1;
-    for (let i = 0; i < 200; i++) { A.step(); if (stopStep < 0 && A.G.mario.vx === 0) stopStep = i; }
+    for (let i = 0; i < 200; i++) { A.stepSim(); if (stopStep < 0 && A.G.mario.vx === 0) stopStep = i; }
     const coast = A.G.mario.x - x0;
     if (stopStep < 0) fail('vx never reached exactly 0 after release');
     if (stopStep > 90) fail('took ' + stopStep + ' steps to stop');
@@ -261,7 +270,7 @@
           let jr = 20, cleared = false;
           for (let i = 0; i < 200; i++) {
             if (jr > 0 && m.vy <= 0) { A.K.jump = true; jr--; } else { A.K.jump = false; jr = 0; }
-            A.step();
+            A.stepSim();
             if (m.dead || A.G.state !== 'play') break;
             if (m.onGround && m.x / A.T > p.b + 1) { cleared = true; break; }
           }
@@ -310,7 +319,11 @@
         if (i === 200) A.spawnItem('mushroom', Math.floor(G.mario.x / T), Math.floor(G.mario.y / T) - 1);
         if (i === 600) A.spawnItem('flower', Math.floor(G.mario.x / T), Math.floor(G.mario.y / T) - 1);
         if (i === 900) A.spawnItem('star', Math.floor(G.mario.x / T), Math.floor(G.mario.y / T) - 1);
-        bot(); A.step(); steps++;
+        bot();
+        /* one rendered frame in twenty: draw() still runs on every course, at 5% of
+           the cost of rendering every step */
+        if (i % 20 === 0) A.step(); else A.stepSim();
+        steps++;
         if (G.lives < 4) G.lives = 9;
         if (i % 4 === 0) {
           const bad = A.violations();
@@ -347,7 +360,8 @@
         /* a player does not sit on the pause screen for a minute; without this the
            fuzz spent 89% of its steps paused and tested nothing while reporting clean */
         if (G.paused) { if (++pausedRun > 40) { A.tap('p'); pausedRun = 0; } } else { pausedRun = 0; active++; }
-        A.step(); steps++;
+        if (i % 20 === 0) A.step(); else A.stepSim();
+        steps++;
         if (G.lives < 4) G.lives = 9;
         if (G.mario && G.mario.vx < -0.2) leftSteps++;
         const nb = (G.balls || []).length;
@@ -381,7 +395,7 @@
     m.x = (L.flagX - 3) * T; m.y = 12 * T - m.h; m.vx = 0; m.vy = 0; m.onGround = true; A.snap();
     A.K.right = true;
     let sawClear = false;
-    for (let i = 0; i < 900; i++) { A.step(); if (G.state === 'clear') sawClear = true; if (sawClear && G.state === 'ready') break; }
+    for (let i = 0; i < 900; i++) { A.stepSim(); if (G.state === 'clear') sawClear = true; if (sawClear && G.state === 'ready') break; }
     A.clearKeys();
     if (!sawClear) fail('touching the flag did not reach the clear state');
     if (!(G.world === 1 && G.lv === 2)) fail('after clearing 1-1 the game sat at ' + G.world + '-' + G.lv);
@@ -394,7 +408,7 @@
     A.run(20);
     if (!G.checkArmed) fail('crossing the checkpoint did not arm it');
     m.dead = false; m.y = (L.H + 4) * T;
-    for (let i = 0; i < 400 && G.state !== 'ready'; i++) A.step();
+    for (let i = 0; i < 400 && G.state !== 'ready'; i++) A.stepSim();
     A.run(140);
     const backAt = G.mario.x / T;
     if (Math.abs(backAt - L.checkX) > 3) fail('respawned at tx ' + backAt.toFixed(1) + ', checkpoint is ' + L.checkX);
@@ -404,7 +418,7 @@
     A.course(2, 1, 0);
     G.lives = 1;
     G.mario.y = (G.level.H + 4) * T;
-    for (let i = 0; i < 500 && G.state !== 'gameover'; i++) A.step();
+    for (let i = 0; i < 500 && G.state !== 'gameover'; i++) A.stepSim();
     if (G.state !== 'gameover') fail('dying on the last life did not reach game over');
     A.tap('Enter');
     A.run(120);
@@ -419,7 +433,7 @@
     m.y = 12 * T - m.h; m.onGround = true; A.snap();
     A.K.right = true;
     let bossCleared = false;
-    for (let i = 0; i < 700; i++) { A.step(); if (G.state === 'clear') { bossCleared = true; break; } }
+    for (let i = 0; i < 700; i++) { A.stepSim(); if (G.state === 'clear') { bossCleared = true; break; } }
     A.clearKeys();
     if (!bossCleared) fail('reaching the axe did not clear the fortress');
     if (!G.bossDown) fail('the fortress cleared without the boss going down');
@@ -433,10 +447,10 @@
     if (!G.paused) fail('rebind is reached from the pause screen; p did not pause');
     A.tap('r');
     if (!(G.rebind >= 0)) fail('r did not open the rebind screen');
-    A.tap('j'); A.step(); A.tap('k'); A.step();
+    A.tap('j'); A.stepSim(); A.tap('k'); A.stepSim();
     if (JSON.stringify(A.keysMap()) === before) fail('binding two keys changed nothing');
     A.tap('Escape');
-    A.step();
+    A.stepSim();
     if (JSON.stringify(A.keysMap()) !== before) fail('cancel did not restore the bindings it started with');
     if (G.rebind >= 0) fail('the rebind screen stayed open after cancel');
     if (G.paused) A.tap('p');
@@ -968,7 +982,7 @@
       A.leaveTitle();
       A.course(1, 1, 0);
       A.K.right = true; A.K.run = true;
-      A.run(600);
+      A.runDraw(600);
       A.clearKeys();
     } finally {
       A.win.console.error = realError; A.win.console.warn = realWarn;
@@ -1036,11 +1050,27 @@
     return notes;
   }
 
+  /* Published after every check so a run that never finishes can still say where it
+     stopped. The first CI failure was a bare 'Timeout 300000ms exceeded' with no
+     indication of whether the suite was slow or stuck -- a distinction worth one line
+     of bookkeeping. */
+  function publishProgress(results, total, current) {
+    try {
+      root.PIPO_PROGRESS = {
+        done: results.length, total,
+        last: current ? current.group + '/' + current.name : null,
+        failedSoFar: results.filter(r => !r.pass).length,
+        at: Date.now()
+      };
+    } catch (e) { /* nothing depends on this */ }
+  }
+
   async function runAll(opts) {
     const doc = (opts && opts.document) || document;
     const src = (opts && opts.src) || '../index.html';
     const onResult = (opts && opts.onResult) || (() => {});
     const cleanedBefore = await resetOrigin();
+    publishProgress([], TESTS.length, null);
     const groups = [];
     for (const t of TESTS) {
       let g = groups.find(x => x.name === t.group);
@@ -1060,10 +1090,10 @@
           const A = api(loaded.win);
           const detail = await t.fn(A, frame);
           const r = { group: g.name, name: t.name, pass: true, detail: detail || '', ms: Date.now() - started };
-          results.push(r); onResult(r);
+          results.push(r); onResult(r); publishProgress(results, TESTS.length, t);
         } catch (e) {
           const r = { group: g.name, name: t.name, pass: false, detail: String(e && e.message || e), ms: Date.now() - started };
-          results.push(r); onResult(r);
+          results.push(r); onResult(r); publishProgress(results, TESTS.length, t);
         } finally {
           if (frame && frame.parentNode) frame.parentNode.removeChild(frame);
         }
