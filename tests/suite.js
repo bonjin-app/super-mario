@@ -734,6 +734,163 @@
     return checked + ' text elements pass AA (tightest ' + worst.toFixed(2) + '× the requirement), 0 third-party assets';
   });
 
+  /* ================= audio ================= */
+  /* A whole subsystem that had never been checked. The failure mode it guards against
+     is not a crash: it is a sound function that silently does nothing, which no
+     invariant and no soak would ever notice. So this counts real node creation and
+     real start() calls -- "it ran without throwing" is not evidence that anything was
+     scheduled. */
+  test('audio', 'every effect actually schedules sound, and mute really silences it', (A) => {
+    const S = A.win.eval('Sound');
+    const BGM = A.win.eval('BGM');
+    S.init();
+    if (!S.ctx) fail('init() created no AudioContext');
+    for (const part of ['master', 'musicBus', 'sfxBus', 'noiseBuf']) {
+      if (!S[part]) fail('init() left ' + part + ' missing');
+    }
+    const seconds = S.noiseBuf.length / S.ctx.sampleRate;
+    if (seconds < 0.5) fail('the shared noise buffer is only ' + seconds.toFixed(2) + 's');
+
+    const ctx = S.ctx;
+    let made = 0, started = 0;
+    const undo = [];
+    for (const name of ['createOscillator', 'createBufferSource']) {
+      const orig = ctx[name].bind(ctx);
+      ctx[name] = function () {
+        const n = orig();
+        made++;
+        if (typeof n.start === 'function') {
+          const s = n.start.bind(n);
+          n.start = function () { started++; return s.apply(this, arguments); };
+        }
+        return n;
+      };
+      undo.push(() => { ctx[name] = orig; });
+    }
+    const restore = () => { for (const f of undo) f(); };
+
+    /* every effect the game can play, not a sample of them */
+    const EFFECTS = ['jump', 'land', 'coin', 'stomp', 'bump', 'breakB', 'emerge', 'timeUp',
+      'worldDone', 'roar', 'collapse', 'checkpoint', 'power', 'grow', 'pipe', 'kick',
+      'fireball', 'shrink', 'flag', 'oneUp', 'die', 'fanfare', 'hurry', 'gameOver', 'record'];
+    const silent = [], threw = [], missing = [];
+    try {
+      for (const name of EFFECTS) {
+        if (typeof S[name] !== 'function') { missing.push(name); continue; }
+        const m0 = made, s0 = started;
+        try { S[name](); } catch (e) { threw.push(name + ': ' + e.message); continue; }
+        if (made === m0) silent.push(name + ' (no node)');
+        else if (started === s0) silent.push(name + ' (node never started)');
+      }
+      if (missing.length) fail('missing effects: ' + missing.join(', '));
+      if (threw.length) fail('effects threw: ' + threw.slice(0, 4).join(' | '));
+      if (silent.length) fail('effects that scheduled nothing: ' + silent.slice(0, 6).join(', '));
+
+      // mute must stop scheduling, not merely turn the gain down
+      const m1 = made, s1 = started;
+      S.muted = true;
+      for (const name of EFFECTS) { try { S[name](); } catch (e) {} }
+      const mutedMade = made - m1, mutedStarted = started - s1;
+      S.muted = false;
+      if (mutedMade > 0 || mutedStarted > 0)
+        fail('muted still scheduled ' + mutedMade + ' nodes / ' + mutedStarted + ' starts');
+
+      /* And the music must schedule notes. start() only arms a setInterval -- the notes
+         are written by tick() -- so tick() is called directly here rather than waiting
+         on a timer, which keeps this synchronous and deterministic. select(1) also
+         exercises the track switch, which is a no-op when the index is unchanged. */
+      const m2 = made;
+      BGM.select(1);
+      BGM.start();
+      if (!BGM.playing) fail('BGM.start() did not mark the music as playing');
+      BGM.tick();
+      const musicNodes = made - m2;
+      BGM.stop();
+      if (BGM.playing) fail('BGM.stop() left the music playing');
+      if (musicNodes === 0) fail('a music tick scheduled no notes');
+      return EFFECTS.length + ' effects, ' + made + ' nodes / ' + started + ' starts, ' +
+             'muted schedules 0, music schedules ' + musicNodes + ', ctx ' + ctx.state;
+    } finally { restore(); }
+  });
+
+  /* ================= offline shell stays in sync ================= */
+  /* sw.js precaches a hand-written list. The list is correct today, and nothing keeps
+     it correct: add a stylesheet or an icon and offline play breaks quietly, for the
+     subset of players who are offline, which is the hardest group to hear from. */
+  test('offline', 'the service worker precaches every asset the app needs', async (A) => {
+    const doc = A.win.document;
+    const swText = await A.win.fetch('sw.js').then(r => r.text());
+    const block = swText.match(/const SHELL\s*=\s*\[([\s\S]*?)\]/);
+    if (!block) fail('could not find the SHELL list in sw.js');
+    const shell = (block[1].match(/'([^']+)'/g) || []).map(s => s.replace(/'/g, '').replace(/^\.\//, ''));
+    if (shell.length < 5) fail('parsed only ' + shell.length + ' shell entries; the parse is wrong, not the list');
+
+    const need = new Set();
+    /* Assets the DOM actually pulls. Deliberately NOT meta-only assets: og:image is
+       fetched by link scrapers, never by a player, so precaching it would spend a
+       player's storage on something they will never see. */
+    for (const el of doc.querySelectorAll('link[href], script[src], img[src]')) {
+      const raw = el.getAttribute('href') || el.getAttribute('src') || '';
+      if (!raw || /^(https?:)?\/\//i.test(raw) || raw.startsWith('data:')) continue;
+      need.add(raw.replace(/^\.\//, '').split('?')[0]);
+    }
+    // the manifest names icons the DOM never mentions, and an installed copy needs them
+    const manifestLink = doc.querySelector('link[rel="manifest"]');
+    if (manifestLink) {
+      const man = await A.win.fetch(manifestLink.getAttribute('href')).then(r => r.json());
+      for (const icon of (man.icons || [])) if (icon.src) need.add(String(icon.src).replace(/^\.\//, '').split('?')[0]);
+    }
+    const missing = Array.from(need).filter(u => !shell.includes(u));
+    if (missing.length) fail('not precached: ' + missing.join(', '));
+    // and the entry point itself, both spellings, or a cold offline open shows nothing
+    for (const entry of ['', 'index.html']) {
+      if (!shell.includes(entry)) fail("the shell is missing the '" + (entry || './') + "' entry");
+    }
+    return shell.length + ' precached, covering ' + need.size + ' referenced assets + the entry point';
+  });
+
+  /* ================= a clean boot ================= */
+  test('boot', 'the page comes up clean and stays quiet while played', (A) => {
+    const G = A.G;
+    if (A.crashed()) fail('the crash boundary tripped during boot');
+    if (G.state !== 'title') fail('booted into state ' + G.state + ', expected title');
+    if (!A.win.document.querySelectorAll('#keys kbd').length) fail('the control panel was never generated');
+    // the title screen must actually be drawn, not merely not-crashed
+    A.draw();
+    const cv = A.win.document.getElementById('screen');
+    const c2 = A.win.document.createElement('canvas');
+    c2.width = cv.width; c2.height = cv.height;
+    const g2 = c2.getContext('2d');
+    g2.drawImage(cv, 0, 0);
+    const d = g2.getImageData(0, 0, cv.width, cv.height).data;
+    let lit = 0; const hues = new Set();
+    for (let i = 0; i < d.length; i += 4 * 97) {
+      if (d[i] + d[i + 1] + d[i + 2] > 24) lit++;
+      hues.add((d[i] >> 4) + ',' + (d[i + 1] >> 4) + ',' + (d[i + 2] >> 4));
+    }
+    if (lit < 200) fail('the title screen is nearly blank (' + lit + ' lit samples)');
+    if (hues.size < 20) fail('the title screen has only ' + hues.size + ' distinct colours');
+
+    /* Runtime quiet. This cannot see load-time console output -- a navigation replaces
+       the frame's global object, so there is nowhere to install a hook beforehand --
+       and it says so rather than implying coverage it does not have. */
+    const errs = [];
+    const realError = A.win.console.error, realWarn = A.win.console.warn;
+    A.win.console.error = function () { errs.push('error: ' + Array.from(arguments).join(' ').slice(0, 80)); return realError.apply(this, arguments); };
+    A.win.console.warn = function () { errs.push('warn: ' + Array.from(arguments).join(' ').slice(0, 80)); return realWarn.apply(this, arguments); };
+    try {
+      A.leaveTitle();
+      A.course(1, 1, 0);
+      A.K.right = true; A.K.run = true;
+      A.run(600);
+      A.clearKeys();
+    } finally {
+      A.win.console.error = realError; A.win.console.warn = realWarn;
+    }
+    if (errs.length) fail(errs.length + ' console messages while playing: ' + errs.slice(0, 3).join(' | '));
+    return lit + ' lit samples, ' + hues.size + ' colours, 600 played steps with a silent console';
+  });
+
   /* ---------- runner ---------- */
   function loadFrame(doc, src) {
     return new Promise((resolve, reject) => {
