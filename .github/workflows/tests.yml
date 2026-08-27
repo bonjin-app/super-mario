@@ -1,0 +1,43 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: .github/ci/package.json
+
+      - name: Install the test runner
+        working-directory: .github/ci
+        run: npm install --no-audit --no-fund
+
+      - name: Install Chromium
+        working-directory: .github/ci
+        run: npx playwright install --with-deps chromium
+
+      # The server and the run share one step on purpose: a process backgrounded in an
+      # earlier step does not reliably survive into the next one.
+      - name: Run the regression suite
+        working-directory: .github/ci
+        run: |
+          python3 -m http.server 8000 --bind 127.0.0.1 --directory "$GITHUB_WORKSPACE" >/dev/null 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/tests/index.html >/dev/null && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8000/tests/index.html >/dev/null || {
+            echo "the static server never came up"; exit 1;
+          }
+          node run-tests.mjs http://127.0.0.1:8000/tests/index.html

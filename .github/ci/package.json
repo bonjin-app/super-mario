@@ -1,0 +1,9 @@
+{
+  "name": "pipo-jump-ci",
+  "private": true,
+  "type": "module",
+  "description": "Test tooling only. The game itself has no dependencies and no build step; keeping this here instead of at the repo root is what preserves that.",
+  "devDependencies": {
+    "playwright": "1.49.1"
+  }
+}
