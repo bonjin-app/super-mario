@@ -991,6 +991,113 @@
     return lit + ' lit samples, ' + hues.size + ' colours, 600 played steps with a silent console';
   });
 
+  /* ================= the build-time structural rules ================= */
+  /* This project's core discipline is that a fix becomes a RULE inside buildLevel, so
+     later content cannot reintroduce it. Those rules existed and nothing re-checked
+     them: they were verified by hand in the rounds that introduced them and then left
+     to trust. A rule nobody re-checks is a comment.
+     Nothing here steps the simulation -- it builds courses and reads their structure,
+     which is why it covers 48 courses in the time one soak takes.
+     The thresholds mirror the engine exactly: AIR_ROWS is [7..12], the spike approach
+     is cx-5..cx+2 (ISSUE-004), and the pit/lava approach is x-3..x+1 (ISSUE-003).
+     Getting those wrong in either direction makes this check a liar, so they are read
+     off the engine's own comments rather than guessed. */
+  test('structure', 'the build-time rules hold across 48 courses', (A) => {
+    const buildLevel = A.win.eval('buildLevel');
+    const buildFortress = A.win.eval('buildFortress');
+    const T = A.T, AIR = [7, 8, 9, 10, 11, 12];
+    /* the engine's own surfaceRow: only terrain rows count, because a reward block two
+       tiles above a walkway is not the ground (scanning from row 5 once put 409 walkers
+       on top of floating brick rows) */
+    const surfaceRow = (map, x) => {
+      for (let y = 11; y <= 14; y++) if (A.solid(map[y][x])) return y;
+      return 15;
+    };
+    const WALKERS = ['puff', 'shelly', 'spiko'];
+    let courses = 0, walkers = 0, spikos = 0, pitCols = 0, lavaCols = 0, waterCourses = 0;
+    const bad = [];
+    const note = (s) => { if (bad.length < 8) bad.push(s); };
+
+    for (let w = 1; w <= 12; w++) for (let lv = 1; lv <= 4; lv++) {
+      const L = lv === 4 ? buildFortress(w) : buildLevel(lv, w);
+      courses++;
+      const map = L.map, W = L.W, H = L.H, tag = w + '-' + lv;
+
+      for (const e of (L.enemies || [])) {
+        if (!WALKERS.includes(e.type)) continue;
+        walkers++;
+        const tx = Math.round(e.x / T);
+        if (tx < 0 || tx >= W) { note(tag + ' ' + e.type + ' spawned outside the map at ' + tx); continue; }
+        const sr = surfaceRow(map, tx);
+        if (sr >= 15) { note(tag + ' ' + e.type + ' at column ' + tx + ' stands over a pit'); continue; }
+        const feet = e.y + e.h, want = sr * T;
+        if (feet > want + 0.01) note(tag + ' ' + e.type + ' at ' + tx + ' is buried (feet ' + feet + ' vs surface ' + want + ')');
+        if (feet < want - 0.01) note(tag + ' ' + e.type + ' at ' + tx + ' floats (feet ' + feet + ' vs surface ' + want + ')');
+        if (e.type === 'spiko') {
+          spikos++;
+          for (let x = tx - 5; x <= tx + 2; x++) {
+            if (x < 0 || x >= W || !A.solid(map[13][x])) { note(tag + ' spike at ' + tx + ' has no run-up at column ' + x); break; }
+            let roofed = false;
+            for (const y of AIR) if (A.solid(map[y][x])) { roofed = true; break; }
+            if (roofed) { note(tag + ' spike at ' + tx + ' has a roofed approach at column ' + x); break; }
+          }
+        }
+      }
+
+      // pit and lava airspace, over the takeoff point and not just over the hazard
+      const hazard = [];
+      for (let x = 0; x < W; x++) {
+        const pit = surfaceRow(map, x) >= 15;
+        let lava = false;
+        for (let y = 11; y < H; y++) if (map[y][x] === 'L') { lava = true; break; }
+        if (pit) pitCols++;
+        if (lava) lavaCols++;
+        hazard.push(pit || lava);
+      }
+      for (let x = 0; x < W; x++) {
+        if (!hazard[x]) continue;
+        let flagged = false;
+        for (let d = -3; d <= 1 && !flagged; d++) {
+          const c = x + d;
+          if (c < 0 || c >= W) continue;
+          for (const y of AIR) if (A.solid(map[y][c])) {
+            note(tag + ' hazard column ' + x + ' is roofed at (' + c + ',' + y + ')="' + map[y][c] + '"');
+            flagged = true; break;
+          }
+        }
+      }
+
+      /* Water passage. The engine settles this with a flood fill from the spawn; this
+         asserts the necessary condition instead of reimplementing it, because a second
+         copy of the flood would only be able to disagree with the first. A hero box is
+         three rows tall, so every column up to the shore needs three contiguous clear
+         rows or nothing can swim through it. */
+      if (L.water) {
+        waterCourses++;
+        for (let x = 3; x <= Math.min(L.waterTo, W - 1); x++) {
+          let best = 0, run = 0;
+          for (let y = 0; y < H; y++) {
+            if (!A.solid(map[y][x])) { run++; if (run > best) best = run; } else run = 0;
+          }
+          if (best < 3) { note(tag + ' water column ' + x + ' pinches to ' + best + ' clear rows'); break; }
+        }
+      }
+    }
+
+    if (bad.length) fail(bad.join(' || '));
+    /* Coverage floors, so this cannot pass by finding nothing to inspect -- a build
+       change that emptied the enemy list would otherwise read as a clean sweep. */
+    if (courses !== 48) fail('built ' + courses + ' courses, expected 48');
+    if (walkers < 1000) fail('only ' + walkers + ' ground walkers inspected; expected ~1243');
+    if (spikos < 80) fail('only ' + spikos + ' spikes inspected; expected ~108');
+    if (pitCols < 300) fail('only ' + pitCols + ' pit columns found; expected ~426');
+    if (lavaCols < 200) fail('only ' + lavaCols + ' lava columns found; expected ~304');
+    if (waterCourses < 4) fail('only ' + waterCourses + ' water courses found; expected 6');
+    return courses + ' courses: ' + walkers + ' walkers all grounded, ' + spikos +
+      ' spikes with open approaches, ' + pitCols + ' pit + ' + lavaCols +
+      ' lava columns with clear airspace, ' + waterCourses + ' water courses passable';
+  });
+
   /* ---------- runner ---------- */
   function loadFrame(doc, src) {
     return new Promise((resolve, reject) => {
