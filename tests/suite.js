@@ -819,7 +819,10 @@
      subset of players who are offline, which is the hardest group to hear from. */
   test('offline', 'the service worker precaches every asset the app needs', async (A) => {
     const doc = A.win.document;
-    const swText = await A.win.fetch('sw.js').then(r => r.text());
+    /* cache: 'reload' on purpose. By the time this runs a real worker is usually
+       controlling the page, and reading a stale sw.js would let this check validate a
+       shell list that is no longer the one being shipped. */
+    const swText = await A.win.fetch('sw.js', { cache: 'reload' }).then(r => r.text());
     const block = swText.match(/const SHELL\s*=\s*\[([\s\S]*?)\]/);
     if (!block) fail('could not find the SHELL list in sw.js');
     const shell = (block[1].match(/'([^']+)'/g) || []).map(s => s.replace(/'/g, '').replace(/^\.\//, ''));
@@ -837,7 +840,7 @@
     // the manifest names icons the DOM never mentions, and an installed copy needs them
     const manifestLink = doc.querySelector('link[rel="manifest"]');
     if (manifestLink) {
-      const man = await A.win.fetch(manifestLink.getAttribute('href')).then(r => r.json());
+      const man = await A.win.fetch(manifestLink.getAttribute('href'), { cache: 'reload' }).then(r => r.json());
       for (const icon of (man.icons || [])) if (icon.src) need.add(String(icon.src).replace(/^\.\//, '').split('?')[0]);
     }
     const missing = Array.from(need).filter(u => !shell.includes(u));
@@ -847,6 +850,48 @@
       if (!shell.includes(entry)) fail("the shell is missing the '" + (entry || './') + "' entry");
     }
     return shell.length + ' precached, covering ' + need.size + ' referenced assets + the entry point';
+  });
+
+  /* ================= the service worker really registers ================= */
+  /* Registration is the half that could never be checked in earlier rounds, because the
+     automation browser then in use refused it outright. It is asserted here; the
+     CONTENTS of the precache deliberately are not, and that is worth explaining.
+
+     A first version of this check waited for the shell to appear in CacheStorage. It
+     passed on a first run (2ms -- already populated) and then failed on every run after,
+     timing out at 15s with nothing cached at all. The cause is not the worker: after
+     unregister(), re-registering a byte-identical script does not make the browser run
+     install() again, so once runAll's reset has deleted the cache there is nothing left
+     to repopulate it. The reset was manufacturing the failure.
+
+     Rather than keep a check that is right once per browser session, this asserts only
+     what is stable, and the precache contents stay covered where they can be measured
+     honestly: the static shell-coverage check above, and the end-to-end run recorded in
+     README (server killed, 12/12 precached, the game played offline). A flaky test is
+     worse than no test -- which is the whole reason this round happened. */
+  test('offline', 'the page registers a worker and it reaches active', async (A) => {
+    const nav = A.win.navigator;
+    if (!('serviceWorker' in nav)) fail('this browser has no service worker support');
+    if (!A.win.isSecureContext) fail('not a secure context, so registration cannot be tested');
+    /* Wait on the registration reaching active, which is deterministic across repeated
+       runs, and read the script URL to be sure it is our worker and not something a
+       browser extension installed. */
+    const t0 = Date.now();
+    let reg = null;
+    while (Date.now() - t0 < 10000) {
+      reg = await nav.serviceWorker.getRegistration();
+      if (reg && reg.active) break;
+      await new Promise(r => A.win.setTimeout(r, 100));
+    }
+    const waited = Date.now() - t0;
+    if (!reg) fail('the page never registered a worker (waited ' + waited + 'ms)');
+    if (!reg.active) fail('the worker never reached active in ' + waited + 'ms (state: ' +
+      ((reg.installing || reg.waiting || {}).state || 'unknown') + ')');
+    if (!/sw\.js$/.test(reg.active.scriptURL)) fail('an unexpected script is registered: ' + reg.active.scriptURL);
+    if (reg.active.state !== 'activated') fail('the active worker is in state ' + reg.active.state);
+    const scope = new A.win.URL(reg.scope).pathname;
+    if (scope !== '/') fail('the worker scope is ' + scope + ', expected the site root');
+    return 'active in ' + waited + 'ms, scope ' + scope + ', ' + reg.active.scriptURL.split('/').pop();
   });
 
   /* ================= a clean boot ================= */
@@ -911,10 +956,50 @@
     });
   }
 
+  /* The page under test registers a real service worker and fills a real cache, on the
+     same origin the suite runs from. Left alone that accumulates: after one run the test
+     page is itself controlled by the worker, and every later fetch -- including the one
+     that reads sw.js to check the shell -- goes through it. The worker is network-first,
+     so it would usually still be fresh, but "usually fresh" is exactly how a stale
+     engine.js made a real fix look inert earlier in this project. A suite that leaves
+     state behind is a suite whose second run tests something different from its first.
+     So each run starts and ends from a known state. */
+  async function resetOrigin() {
+    const notes = [];
+    try {
+      if (navigator.serviceWorker) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) await r.unregister();
+        /* unregister() resolving does not mean the registration is gone: it is still
+           handed back by getRegistrations() for a while, with an already-'activated'
+           worker attached. Wait for it to actually clear, or the next run inherits a
+           registration that looks ready and has no cache behind it. */
+        if (regs.length) {
+          const t0 = Date.now();
+          let left = regs.length;
+          while (Date.now() - t0 < 5000) {
+            left = (await navigator.serviceWorker.getRegistrations()).length;
+            if (left === 0) break;
+            await new Promise(r => setTimeout(r, 100));
+          }
+          notes.push(regs.length + ' worker(s) unregistered' +
+            (left ? ', ' + left + ' still lingering after 5s' : ' and cleared'));
+        }
+      }
+    } catch (e) { notes.push('worker reset failed: ' + e.message); }
+    try {
+      const keys = await caches.keys();
+      for (const k of keys) await caches.delete(k);
+      if (keys.length) notes.push(keys.length + ' cache(s) deleted');
+    } catch (e) { notes.push('cache reset failed: ' + e.message); }
+    return notes;
+  }
+
   async function runAll(opts) {
     const doc = (opts && opts.document) || document;
     const src = (opts && opts.src) || '../index.html';
     const onResult = (opts && opts.onResult) || (() => {});
+    const cleanedBefore = await resetOrigin();
     const groups = [];
     for (const t of TESTS) {
       let g = groups.find(x => x.name === t.group);
@@ -943,9 +1028,13 @@
         }
       }
     }
+    const cleanedAfter = await resetOrigin();   // leave the origin as it was found
     const failed = results.filter(r => !r.pass);
-    return { total: results.length, passed: results.length - failed.length, failed: failed.length, results };
+    return {
+      total: results.length, passed: results.length - failed.length, failed: failed.length,
+      results, origin: { cleanedBefore, cleanedAfter }
+    };
   }
 
-  root.PIPO_SUITE = { runAll, tests: TESTS };
+  root.PIPO_SUITE = { runAll, resetOrigin, tests: TESTS };
 })(typeof window !== 'undefined' ? window : this);
