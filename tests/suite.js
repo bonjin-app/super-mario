@@ -1098,6 +1098,100 @@
       ' lava columns with clear airspace, ' + waterCourses + ' water courses passable';
   });
 
+  /* The rest of the documented build-time rules: the checkpoint's footing, the bonus
+     room exits, and the room geometry that comes out of the two numbers this game is
+     built on (the big hero is 30px tall and jumps 75px, so a reward block sits FOUR
+     rows above the surface you hit it from -- three leaves 2px of headroom and the big
+     hero cannot even start the jump). Same reasoning as the check above: these were
+     verified once, by hand, and then trusted. */
+  test('structure', 'checkpoints, room exits and room geometry all hold', (A) => {
+    const buildLevel = A.win.eval('buildLevel');
+    const roomFor = A.win.eval('roomFor');
+    const T = A.T;
+    let fields = 0, entries = 0, rooms = 0, rewards = 0;
+    const roomIds = new Set();
+    const bad = [];
+    const note = (s) => { if (bad.length < 8) bad.push(s); };
+
+    for (let w = 1; w <= 12; w++) for (let lv = 1; lv <= 3; lv++) {
+      const L = buildLevel(lv, w);
+      fields++;
+      const map = L.map, W = L.W, H = L.H, tag = w + '-' + lv;
+
+      /* CHECKPOINT. A course is 198 tiles; without one, a death near the flag costs
+         three minutes of replay. The engine searches outward from the midpoint for a
+         column with ground below, open sky above and no walker within three tiles, and
+         relaxes to the first two conditions (retiring the walker) if nothing qualifies.
+         Either way the result must satisfy the geometry -- and must exist at all, which
+         it silently did not in two courses before the fallback was added. */
+      const cx = L.checkX;
+      if (!cx) note(tag + ' has no checkpoint at all');
+      else {
+        for (let x = cx - 1; x <= cx + 2; x++) {
+          if (x < 4 || x >= W - 8) { note(tag + ' checkpoint column ' + x + ' is outside the usable range'); break; }
+          if (!A.solid(map[13][x])) { note(tag + ' checkpoint column ' + x + ' has no ground to respawn onto'); break; }
+          let roofed = false;
+          for (let y = 6; y <= 12; y++) if (A.solid(map[y][x])) { roofed = true; break; }
+          if (roofed) { note(tag + ' checkpoint column ' + x + ' is roofed, so a respawn could land inside it'); break; }
+        }
+        for (const e of (L.enemies || [])) {
+          if (e.air) continue;
+          if (Math.abs(e.x - cx * T) < 3 * T) {
+            note(tag + ' a ' + e.type + ' starts ' + Math.round(Math.abs(e.x / T - cx)) + ' tiles from the checkpoint');
+            break;
+          }
+        }
+      }
+
+      for (const e of (L.entries || [])) {
+        entries++;
+        /* ROOM EXIT. Three courses once named exit columns that held no pipe at all, so
+           every trip fell back to re-emerging from the entrance -- the detour bought
+           nothing and read as a bug. The exit must be a real pipe top, and ahead. */
+        const isTop = (x) => {
+          if (x < 0 || x >= W) return false;
+          for (let y = 0; y < H; y++) if (map[y][x] === 'T' || map[y][x] === 'E') return true;
+          return false;
+        };
+        if (!isTop(e.exitTx)) note(tag + ' pipe at ' + e.tx + ' exits at ' + e.exitTx + ', which holds no pipe');
+        else if (e.exitTx <= e.tx) note(tag + ' pipe at ' + e.tx + ' exits backwards at ' + e.exitTx);
+
+        const R = roomFor(e, w);
+        rooms++;
+        roomIds.add(R.roomId);
+        const rm = R.map, rW = R.W, rH = R.H;
+        /* The two rows above the exit lip are cleared unconditionally, because a big
+           hero standing on the lip occupies them. An early draft put a ? block directly
+           over an exit and the collision shoved the hero onto the block instead, so the
+           exit could not be stood on at all. */
+        for (const y of [R.exitTy - 1, R.exitTy - 2]) {
+          for (const x of [R.exitTx, R.exitTx + 1]) {
+            if (y >= 0 && y < rH && x >= 0 && x < rW && A.solid(rm[y][x]))
+              note('room ' + R.roomId + ' blocks the exit lip at (' + x + ',' + y + ')="' + rm[y][x] + '"');
+          }
+        }
+        // every reward block must have a surface exactly four rows under it
+        for (let y = 0; y < rH; y++) for (let x = 0; x < rW; x++) {
+          const c = rm[y][x];
+          if (c !== '?' && c !== 'M') continue;
+          rewards++;
+          if (!(y + 4 < rH && A.solid(rm[y + 4][x])))
+            note('room ' + R.roomId + ' has a "' + c + '" at (' + x + ',' + y + ') with no surface four rows below it');
+        }
+      }
+    }
+
+    if (bad.length) fail(bad.join(' || '));
+    if (fields !== 36) fail('built ' + fields + ' field courses, expected 36');
+    if (entries < 24) fail('only ' + entries + ' pipe entrances inspected; expected ~30');
+    if (rooms < 24) fail('only ' + rooms + ' bonus rooms built; expected ~30');
+    if (roomIds.size < 3) fail('only room types ' + Array.from(roomIds).join(',') + ' appeared; all three should');
+    if (rewards < 20) fail('only ' + rewards + ' reward blocks inspected across the rooms');
+    return fields + ' courses all have a sound checkpoint, ' + entries +
+      ' pipe exits all land on a pipe ahead, ' + rooms + ' rooms (' +
+      Array.from(roomIds).sort().join('/') + ') with ' + rewards + ' reachable rewards and clear exit lips';
+  });
+
   /* ---------- runner ---------- */
   function loadFrame(doc, src) {
     return new Promise((resolve, reject) => {
