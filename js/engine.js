@@ -1906,13 +1906,21 @@ function saveSettings() {
   } catch (e) { /* private mode: settings just do not persist */ }
 }
 
-/* ---------- level building (3 rotating layouts) ---------- */
+/* ---------- level building (8 rotating layouts) ---------- */
 function buildLevel(lv, world = 1) {
-  /* Four layouts over three field courses, shifted by world: 1 runs 0/1/2, world 2
-     runs 1/2/3, world 3 runs 2/3/0. Nobody sees the same three in the same order twice
-     in a row, and the layout/palette pairing changes every lap. */
-  const LAYOUTS = 5;
-  const variant = (lv - 1 + (world - 1)) % LAYOUTS;
+  /* The rotation walks the layouts in PLAY ORDER, which the first version did not, and
+     the difference is the whole reason a lap felt repetitive.
+     It used to be `(lv - 1 + (world - 1)) % LAYOUTS`, which advances by one for a course
+     AND by one for a world -- so consecutive worlds overlapped by two. World 1 ran
+     0/1/2 and world 2 ran 1/2/3, which means 1-2 and 2-1 were the same layout back to
+     back, and so were 1-3 and 2-2. Measured over 24 courses, the first exact repeat
+     landed on the FOURTH course played. Widening the pool from five layouts to eight
+     did nothing about that on its own: the fault was the formula, not the count.
+     Counting field courses in the order they are played makes every consecutive pair
+     different by construction, and a shape only comes back around every eight courses.
+     Course 4 of a world is a fortress and never reaches here, so lv is 1..3. */
+  const LAYOUTS = 8;
+  const variant = ((world - 1) * 3 + (lv - 1)) % LAYOUTS;
   /* Enemies get modestly faster each world so a revisited layout still plays
      differently. Capped so the 3rd lap does not become unreadable. */
   const pace = 1 + Math.min(world - 1, 5) * 0.09;
@@ -2194,7 +2202,7 @@ function buildLevel(lv, world = 1) {
     CAN(110, 11);
     plat(98, 8, 'h', 5); coinRow(100, 103, 4);
     plat(178, 11, 'v', -5); coinRow(180, 184, 6);
-  } else {
+  } else if (variant === 4) {
     /* ---------- layout 4: the lagoon ----------
        Water from the start to column 172, then a dry shore that runs into the usual
        stairs and flagpole, so the goal sequence is untouched. Underwater the hero
@@ -2227,6 +2235,135 @@ function buildLevel(lv, world = 1) {
     FSH(76, 8, 22); FSH(90, 6, 20); FSH(104, 9, 24); FSH(116, 7, 18);
     FSH(130, 8, 22); FSH(144, 6, 20); FSH(156, 9, 20);
     P(176); P(177); S(180);
+  } else if (variant === 5) {
+    /* ---------- layout 5: the pipe gauntlet ----------
+       Layouts 0-2 were the same idea three times -- flat ground with pits at different
+       spacings -- which is most of why a lap felt repetitive. This one changes the
+       AXIS: the obstacles are pipes of rising height, so the rhythm is vertical and the
+       question is how much runway you leave yourself before a climb rather than how
+       wide a hole is. Only three pits, all with long approaches, because the course is
+       already asking for jumps.
+       Two of the pipes hold a chomp, which is the one enemy a climb cannot be rushed
+       past: standing on the mouth keeps it down, so the pipe teaches patience. */
+    gap(58, 59); gap(88, 89); gap(146, 148);
+    // the opening staircase of pipes: 2, 3, then 4 tiles, each with flat runway after
+    pipe(14, 2); pipe(24, 3); pipe(36, 4);
+    coinArc(19, 9, 3); coinArc(30, 9, 3);
+    blk(44, 9, 'B'); blk(45, 9, 'M'); blk(46, 9, 'B');
+    blk(45, 5);
+    coinRow(44, 46, 8);
+    // the detour: in at 52, out at 68, so the trip also buys sixteen tiles of progress
+    pipeIn(52, 3, 68, 1); pipe(68, 3);
+    coinArc(58, 9, 3);
+    blk(74, 9, 'B'); blk(75, 9); blk(76, 9, 'B'); blk(77, 9, 'M'); blk(78, 9, 'B');
+    blk(76, 5);
+    coinRow(74, 78, 8);
+    coinArc(88, 9, 3);
+    blk(96, 9, 'B'); blk(97, 9); blk(98, 9, 'B');
+    coinRow(96, 98, 8);
+    /* 101-114 is left deliberately open: the checkpoint search starts at 99 and needs
+       four columns of ground with clear sky, and a spike needs eight. */
+    pipe(118, 4);
+    blk(128, 9, 'B'); blk(129, 9, 'F'); blk(130, 9, 'B'); blk(131, 9, 'B');
+    blk(130, 5);
+    coinRow(128, 131, 8);
+    coinArc(147, 9, 4);
+    pipe(160, 2);
+    blk(168, 9, 'B'); blk(169, 9); blk(170, 9, 'B'); blk(171, 9, 'M'); blk(172, 9, 'B');
+    coinRow(168, 172, 8);
+    coinRow(174, 178, 12);
+    P(20); P(21); P(31); P(32); P(48); P(49); P(64); P(65);
+    S(72); P(84); P(85); P(93); P(94);
+    P(122); P(123); P(134); P(135); S(138);
+    P(152); P(153); P(164); P(165); P(176);
+    SPK(111); SPK(143);
+    FLP(82); FLP(156);
+    CHP(36, 4); CHP(118, 4);
+    GLD(60, 7, 20); GLD(126, 6, 22);
+    CAN(126, 11);
+    // a ride over the long open middle, with the reward on the ride rather than under it
+    plat(104, 8, 'h', 6); coinRow(106, 110, 5);
+  } else if (variant === 6) {
+    /* ---------- layout 6: the cannon corridor ----------
+       The threat here is ranged rather than underfoot. Four cannons stand at three
+       different rows, so the safe lane changes height as you go, and gliders cross the
+       gaps between them. A cannon barrel is harmless to touch -- what you are dodging
+       is the bolt -- which makes this the one course where standing still is sometimes
+       the right move, and where a hero who only knows how to run forward gets hit.
+       Pits are wide but few, and none of them sits under a cannon: being shot while
+       committed to a jump is the coin flip this file keeps refusing to ship. */
+    gap(46, 48); gap(96, 97); gap(140, 142);
+    blk(20, 9, 'B'); blk(21, 9, 'M'); blk(22, 9, 'B'); blk(23, 9); blk(24, 9, 'B');
+    blk(22, 5);
+    coinRow(20, 24, 8);
+    CAN(30, 11);
+    coinArc(47, 9, 4);
+    blk(60, 9, 'B'); blk(61, 9); blk(62, 9, 'F'); blk(63, 9, 'B');
+    blk(62, 5);
+    coinRow(60, 63, 8);
+    CAN(72, 10);
+    coinRow(86, 90, 12);
+    coinArc(96, 9, 3);
+    // 100-114 stays clear for the checkpoint and the spike below it
+    blk(108, 9, 'B'); blk(109, 9); blk(110, 9, 'B');
+    coinRow(108, 110, 8);
+    CAN(120, 9);
+    blk(130, 9, 'B'); blk(131, 9, 'M'); blk(132, 9, 'B');
+    coinArc(141, 9, 4);
+    blk(150, 9, 'B'); blk(151, 9); blk(152, 9, 'B'); blk(153, 9, 'B');
+    blk(152, 5);
+    coinRow(150, 153, 8);
+    CAN(158, 11);
+    coinRow(168, 174, 12);
+    P(16); P(17); P(36); P(37); P(38);
+    S(54); P(55); P(66); P(67);
+    P(80); P(81); P(92);
+    P(116); P(117); P(126); P(127); S(136);
+    P(146); P(147); P(164); P(165); P(166); P(176);
+    SPK(78); SPK(104);
+    FLP(56); FLP(134);
+    GLD(38, 7, 20); GLD(86, 6, 24); GLD(130, 7, 18); GLD(168, 6, 22);
+    plat(28, 8, 'v', -4); coinRow(30, 33, 5);
+  } else {
+    /* ---------- layout 7: the spike garden ----------
+       One idea, stated six times: not everything can be stomped. SPIKO is dense here
+       and the answer is never your feet -- it is the flower this course hands you in
+       the first twenty tiles, or a shell taken off one of the shellys placed just
+       before each cluster. That pairing is the whole design: the tool arrives before
+       the problem, close enough that the connection is legible.
+       Flappies sit between the spikes because they CAN be stomped, so the course keeps
+       asking which kind of enemy is in front of you rather than letting one answer
+       carry the whole run. */
+    gap(112, 113); gap(166, 167);
+    // the flower comes first, and it is directly on the path rather than off it
+    blk(14, 9, 'B'); blk(15, 9); blk(16, 9, 'F'); blk(17, 9, 'B'); blk(18, 9, 'B');
+    blk(16, 5);
+    coinRow(14, 18, 8);
+    // each cluster: a shelly to harvest, then the spike it answers
+    S(38); S(60);
+    blk(82, 9, 'B'); blk(83, 9, 'M'); blk(84, 9, 'B'); blk(85, 9, 'B'); blk(86, 9);
+    blk(84, 5);
+    coinRow(82, 86, 8);
+    // 91-110 open: the checkpoint sits in here, clear of every spike run-up
+    blk(102, 9, 'B'); blk(103, 9); blk(104, 9, 'B');
+    coinRow(102, 104, 8);
+    coinArc(112, 9, 3);
+    S(126); S(148);
+    blk(128, 9, 'B'); blk(129, 9, 'F'); blk(130, 9, 'B');
+    coinRow(128, 130, 8);
+    coinArc(166, 9, 3);
+    blk(172, 9, 'B'); blk(173, 9); blk(174, 9, 'B'); blk(175, 9, 'M'); blk(176, 9, 'B');
+    coinRow(172, 176, 8);
+    coinRow(178, 180, 12);
+    // the spikes, each with the eight clear columns its run-up needs
+    SPK(30); SPK(52); SPK(74); SPK(118); SPK(140); SPK(162);
+    // and the stompable ones, so the question stays open
+    FLP(44); FLP(66); FLP(94); FLP(132); FLP(154);
+    P(22); P(23); P(46); P(47); P(68); P(69);
+    P(88); P(89); P(98); P(99);
+    P(120); P(121); P(144); P(145); P(158); P(159); P(178);
+    GLD(56, 7, 18); GLD(136, 6, 22);
+    plat(106, 8, 'h', 5); coinRow(108, 112, 5);
   }
 
   // shared: stairs, flag, castle

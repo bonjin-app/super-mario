@@ -1092,7 +1092,7 @@
     if (spikos < 80) fail('only ' + spikos + ' spikes inspected; expected ~108');
     if (pitCols < 300) fail('only ' + pitCols + ' pit columns found; expected ~426');
     if (lavaCols < 200) fail('only ' + lavaCols + ' lava columns found; expected ~304');
-    if (waterCourses < 4) fail('only ' + waterCourses + ' water courses found; expected 6');
+    if (waterCourses < 3) fail('only ' + waterCourses + ' water courses found; expected ~4');
     return courses + ' courses: ' + walkers + ' walkers all grounded, ' + spikos +
       ' spikes with open approaches, ' + pitCols + ' pit + ' + lavaCols +
       ' lava columns with clear airspace, ' + waterCourses + ' water courses passable';
@@ -1183,8 +1183,12 @@
 
     if (bad.length) fail(bad.join(' || '));
     if (fields !== 36) fail('built ' + fields + ' field courses, expected 36');
-    if (entries < 24) fail('only ' + entries + ' pipe entrances inspected; expected ~30');
-    if (rooms < 24) fail('only ' + rooms + ' bonus rooms built; expected ~30');
+    /* Floors, not targets. Five of the eight layouts carry an entrance, so 36 field
+       courses yield exactly 24 of them -- sitting a floor ON that number would turn any
+       future rotation change into a spurious red build. What these guard against is the
+       entrances disappearing, so they are set with room to breathe. */
+    if (entries < 18) fail('only ' + entries + ' pipe entrances inspected; expected ~24');
+    if (rooms < 18) fail('only ' + rooms + ' bonus rooms built; expected ~24');
     if (roomIds.size < 3) fail('only room types ' + Array.from(roomIds).join(',') + ' appeared; all three should');
     if (rewards < 20) fail('only ' + rewards + ' reward blocks inspected across the rooms');
     return fields + ' courses all have a sound checkpoint, ' + entries +
@@ -1932,10 +1936,17 @@
     const doc = (opts && opts.document) || document;
     const src = (opts && opts.src) || '../index.html';
     const onResult = (opts && opts.onResult) || (() => {});
+    /* `only` runs a subset by group name, for iterating on one area without paying for
+       the timer-driven checks (crash and offline poll real clocks, which a hidden or
+       throttled tab stretches out). The full run is still what CI reports. */
+    const only = opts && opts.only
+      ? (Array.isArray(opts.only) ? opts.only : [opts.only])
+      : null;
     const cleanedBefore = await resetOrigin();
     publishProgress([], TESTS.length, null);
     const groups = [];
     for (const t of TESTS) {
+      if (only && !only.includes(t.group)) continue;
       let g = groups.find(x => x.name === t.group);
       if (!g) groups.push(g = { name: t.group, tests: [] });
       g.tests.push(t);
