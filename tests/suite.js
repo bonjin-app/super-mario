@@ -131,6 +131,19 @@
     return A;
   }
 
+  /* WHICH course is a lagoon is a property of the rotation, not a fact to hard-code.
+     Three checks used to name 3-3 directly and all three went red the moment the
+     rotation changed -- correctly, but for the wrong reason: the water rules had not
+     moved, only their address. Finding it keeps them pointed at the thing they test. */
+  function findWater(A, fromWorld) {
+    for (let w = fromWorld || 1; w <= fromWorld + 12; w++) {
+      for (let lv = 1; lv <= 3; lv++) {
+        if (A.win.eval('buildLevel')(lv, w).water) return { w, lv };
+      }
+    }
+    return null;
+  }
+
   const fail = (msg) => { throw new Error(msg); };
   const near = (a, b, tol) => Math.abs(a - b) <= tol;
 
@@ -141,17 +154,19 @@
      places, which is why it went unnoticed. Every bot in the project's history held
      the run key, and run acceleration always cleared the threshold. */
   test('locomotion', 'every hero walks, runs and swims, at the documented speeds', (A) => {
+    const wet = findWater(A, 1);
+    if (!wet) fail('no water course found in the first thirteen worlds');
     const cases = [];
     for (let ci = 0; ci < A.chars.length; ci++) {
       const mul = A.chars[ci].speed;
       cases.push({ ci, world: 1, lv: 1, run: false, cap: 1.4 * mul, label: 'land walk' });
       cases.push({ ci, world: 1, lv: 1, run: true, cap: 2.7 * mul, label: 'land run' });
-      cases.push({ ci, world: 3, lv: 3, run: false, cap: 1.55 * mul, label: 'water' });
+      cases.push({ ci, world: wet.w, lv: wet.lv, run: false, cap: 1.55 * mul, label: 'water' });
     }
     const notes = [];
     for (const c of cases) {
       A.course(c.world, c.lv, c.ci);
-      if (c.world === 3 && !A.G.level.water) fail('expected a water course at 3-3');
+      if (c.label === 'water' && !A.G.level.water) fail('expected ' + c.world + '-' + c.lv + ' to be a water course');
       if (A.G.level.enemies) A.G.level.enemies.length = 0;   // locomotion only
       const x0 = A.G.mario.x;
       A.K.right = true; A.K.run = c.run;
@@ -1297,19 +1312,37 @@
      frozen no matter how many laps in you were. */
   test('fixes', 'coral deepens as the laps go on', (A) => {
     const buildLevel = A.win.eval('buildLevel');
+    /* three lagoons at rising laps, wherever the rotation happens to put them */
+    const spots = [];
+    for (let from = 1; spots.length < 3 && from <= 24; ) {
+      const hit = findWater(A, from);
+      if (!hit) break;
+      spots.push(hit);
+      from = hit.w + 4;                     // skip ahead so the laps are far apart
+    }
+    if (spots.length < 3) fail('found only ' + spots.length + ' lagoons to compare laps across');
     const counts = [];
-    for (const w of [3, 8, 13]) {
-      const L = buildLevel(3, w);
-      if (!L.water) fail('expected world ' + w + ' course 3 to be a water course');
+    for (const spot of spots) {
+      const w = spot.w;
+      const L = buildLevel(spot.lv, w);
+      if (!L.water) fail('expected ' + w + '-' + spot.lv + ' to be a water course');
       let n = 0;
       for (let y = 0; y < L.H; y++) for (let x = 0; x < L.W; x++) if (L.map[y][x] === 'B') n++;
       counts.push({ w, n });
     }
     if (counts[0].n < 50) fail('only ' + counts[0].n + ' coral tiles in the first lap; the count looks broken, not frozen');
+    /* The bug was that the count sat FROZEN whatever lap you were on, so the property
+       worth asserting is growth end to end. Demanding a strict rise between every
+       adjacent pair would make the check hostage to how far apart the rotation happens
+       to place two lagoons -- measured, one such pair differs by only two tiles. */
+    const first = counts[0], last = counts[counts.length - 1];
+    if (!(last.n > first.n))
+      fail('coral did not grow from world ' + first.w + ' (' + first.n + ') to world ' +
+           last.w + ' (' + last.n + ') -- the growth is dead code again');
     for (let i = 1; i < counts.length; i++) {
-      if (!(counts[i].n > counts[i - 1].n))
-        fail('coral did not grow from world ' + counts[i - 1].w + ' (' + counts[i - 1].n +
-             ') to world ' + counts[i].w + ' (' + counts[i].n + ') -- the growth is dead code again');
+      if (counts[i].n < counts[i - 1].n)
+        fail('coral went backwards from world ' + counts[i - 1].w + ' (' + counts[i - 1].n +
+             ') to world ' + counts[i].w + ' (' + counts[i].n + ')');
     }
     return counts.map(c => 'w' + c.w + '=' + c.n).join(' -> ');
   });
@@ -1779,8 +1812,10 @@
     const G = A.G, T = A.T;
     const W = A.win.eval('WATER');
     const inWater = A.win.eval('inWater');
-    const L = A.course(3, 3, 0);
-    if (!L.water) fail('3-3 was expected to be a water course');
+    const wet = findWater(A, 1);
+    if (!wet) fail('no water course found to test in');
+    const L = A.course(wet.w, wet.lv, 0);
+    if (!L.water) fail(wet.w + '-' + wet.lv + ' was expected to be a water course');
     const m = G.mario;
     const park = () => {
       m.big = false; m.h = 16; m.star = 0; m.invuln = 9999; m.dead = false;
