@@ -2025,10 +2025,36 @@ function buildLevel(lv, world = 1) {
 
   if (variant === 0) {
     gap(69,70); gap(86,88); gap(153,155);
-    blk(16,9);
-    blk(20,9,'B'); blk(21,9,'M'); blk(22,9); blk(23,9,'B'); blk(24,9);
-    blk(20,5,'B'); blk(21,5); blk(22,5,'B'); blk(23,5); blk(24,5,'B');
-    pipe(28,2); pipe(38,3); pipeIn(46,4, 57, 0); pipe(57,4);
+    /* ---------- the opening is the tutorial ----------
+       This course is the first thing anybody plays, and it used to teach nothing: the
+       first walker stood at column 22, directly underneath a five-wide block row with a
+       second row above that, so a player's first-ever stomp happened in a corridor with
+       two ceilings in it. Everything a new player needed to know arrived as text instead
+       ("HOLD Z TO RUN"), which is the cheap way to do it.
+       Now each idea gets its own clean space, in the order that makes the next one
+       readable, and nothing overlaps:
+         8-11   a coin trail on the floor -- the only job is to say "rightwards"
+         18     ONE walker, alone, with rows 5-12 empty from 13 to 24. Stomping it is
+                the whole lesson and there is no ceiling to bonk on the way down
+         26     ONE ? block, after the stomp is learned, so bumping is its own lesson
+         30     a two-tile pipe: the first jump where failing costs nothing at all,
+                which is what makes it safe to teach a jump with
+         34-36  the mushroom row, and one block above it at row 5 to show that the
+                lower row is itself a floor -- the optional route, introduced once the
+                jump is known
+         38     a three-tile pipe with a chomp in it: the first obstacle that asks for
+                timing rather than height, and the first enemy that cannot be rushed
+         46     the enterable pipe, once pipes are a familiar shape
+       The first pit is at 69, by which point the player has jumped at least four times.
+       Running still arrives as a hint, and honestly has to: no arrangement of tiles
+       says "hold a second key", and a gap that demands running would be a death trap
+       for the player who has not read it yet. Placement can teach the rest. */
+    coinRow(8, 11, 12);
+    blk(26, 9); coinAt(26, 8);
+    pipe(30, 2);
+    blk(34, 9, 'B'); blk(35, 9, 'M'); blk(36, 9, 'B'); blk(35, 5);
+    coinRow(34, 36, 8);
+    pipe(38, 3); pipeIn(46, 4, 57, 0); pipe(57, 4);
     blk(77,9,'B'); blk(78,9,'M'); blk(79,9,'B');
     blk(80,5); blk(83,5);
     blk(84,9,'B'); blk(85,9,'F'); blk(86,9,'B'); blk(87,9,'B');
@@ -2046,11 +2072,12 @@ function buildLevel(lv, world = 1) {
     blk(140,9,'B'); blk(141,9,'B'); blk(142,9,'B'); blk(143,9,'B');
     blk(148,9); blk(151,9,'B'); blk(159,9,'B'); blk(162,9,'B');
     blk(169,9,'B'); blk(172,9,'B');
-    coinRow(21, 23, 8); coinRow(33, 36, 12); coinArc(69, 9, 3);
+    coinRow(41, 44, 12); coinArc(69, 9, 3);
     coinRow(48, 52, 12); coinArc(87, 9, 3); coinRow(107, 110, 8);
     coinRow(118, 120, 8); coinRow(140, 143, 8); coinArc(154, 9, 3);
     coinRow(174, 178, 12);
-    P(22); P(30); P(31); P(40); P(41);
+    // one walker for the lesson at 18, then the pace picks up past the pipes
+    P(18); P(43);
     P(51); P(52); P(53); P(59); P(61); P(70); P(71);
     S(78); P(88); P(89);
     P(97); P(98); P(107); P(108); P(109); P(110);
