@@ -1763,6 +1763,97 @@
     return 'one warning at 100, no repeats, death at 0 with the reason recorded';
   });
 
+  /* ================= water ================= */
+  /* The rule that keeps a lagoon from becoming a flight level: a stroke is a fixed
+     impulse, and HOLDING the key does not buy any more of it. On land the variable-jump
+     clamp (`if (!wet && !keys.jump && m.vy < -2) m.vy = -2`) is what makes a tap
+     shorter than a hold; that clamp is gated on being dry, and if the gate ever came
+     off, water would turn into a hover.
+     Constants are read off the engine rather than copied, so the check cannot drift
+     away from the values it is meant to be protecting. */
+  test('water', 'a stroke is a fixed impulse, and the shore gives land physics back', (A) => {
+    const G = A.G, T = A.T;
+    const W = A.win.eval('WATER');
+    const inWater = A.win.eval('inWater');
+    const L = A.course(3, 3, 0);
+    if (!L.water) fail('3-3 was expected to be a water course');
+    const m = G.mario;
+    const park = () => {
+      m.big = false; m.h = 16; m.star = 0; m.invuln = 9999; m.dead = false;
+      m.x = 6 * T; m.px = m.x; m.vx = 0;
+      m.y = 8 * T; m.py = m.y; m.vy = 0;
+      m.onGround = false; m.jumpBuf = 0;
+      if (L.enemies) L.enemies.length = 0;
+      A.K.left = A.K.right = A.K.run = A.K.jump = false;
+    };
+
+    // one stroke, key held down for the whole rise versus released immediately
+    const rise = (hold) => {
+      park();
+      if (!inWater(m)) fail('the hero is not in the water where this test parks it');
+      const y0 = m.y;
+      m.jumpBuf = 8;                       // the edge, as the keydown handler sets it
+      A.K.jump = hold;
+      let peak = m.y;
+      for (let i = 0; i < 60; i++) {
+        A.stepSim();
+        if (m.y < peak) peak = m.y;
+        if (!hold) A.K.jump = false;
+      }
+      A.K.jump = false;
+      return y0 - peak;
+    };
+    const held = rise(true), tapped = rise(false);
+    /* The absolute figure depends on where the measurement window starts and stops;
+       what the rule actually says is that the two are the SAME. */
+    if (Math.abs(held - tapped) > 0.01)
+      fail('holding the key rose ' + held.toFixed(1) + 'px and tapping it ' + tapped.toFixed(1) +
+           'px -- water is turning into a flight level');
+    if (!(held > 15 && held < 60))
+      fail('a single stroke rose ' + held.toFixed(1) + 'px, which is outside anything this game intends');
+
+    // and strokes stack: that is how you climb a shaft
+    park();
+    const y0 = m.y;
+    let best = m.y;
+    for (let s = 0; s < 4; s++) {
+      m.jumpBuf = 8;
+      for (let i = 0; i < 14; i++) { A.stepSim(); if (m.y < best) best = m.y; }
+    }
+    const climbed = y0 - best;
+    if (!(climbed > held * 1.5))
+      fail('four strokes climbed ' + climbed.toFixed(1) + 'px against one stroke of ' +
+           held.toFixed(1) + 'px -- they are not stacking');
+
+    // sinking is slow in water and fast on land
+    park();
+    let wetTerm = 0;
+    for (let i = 0; i < 200; i++) { A.stepSim(); if (m.vy > wetTerm) wetTerm = m.vy; }
+    if (Math.abs(wetTerm - W.maxFall) > 0.01)
+      fail('terminal fall in water was ' + wetTerm.toFixed(3) + ', WATER.maxFall says ' + W.maxFall);
+
+    /* Past the shore the same course has to behave like dry land again, or the beach at
+       the end of a lagoon would still swim. */
+    let col = -1;
+    for (let x = L.waterTo + 3; x < L.W - 12 && col < 0; x++) {
+      let ok = A.solid(A.cellAt(x, 13));
+      for (let y = 6; y <= 12; y++) if (A.solid(A.cellAt(x, y))) ok = false;
+      if (ok) col = x;
+    }
+    if (col < 0) fail('found no open column past the shore to drop the hero into');
+    m.invuln = 9999; m.dead = false;
+    m.x = col * T; m.px = m.x; m.vx = 0;
+    m.y = 6 * T; m.py = m.y; m.vy = 0; m.onGround = false;
+    if (inWater(m)) fail('column ' + col + ' is past waterTo=' + L.waterTo + ' and still reads as water');
+    let dryTerm = 0;
+    for (let i = 0; i < 40; i++) { A.stepSim(); if (m.vy > dryTerm) dryTerm = m.vy; }
+    if (Math.abs(dryTerm - 5.5) > 0.01)
+      fail('on the beach the hero fell at ' + dryTerm.toFixed(3) + ', expected the land terminal of 5.5');
+    if (!m.onGround) fail('the hero never landed on the beach');
+    return 'one stroke ' + held.toFixed(1) + 'px held and tapped alike, four stroke ' +
+      climbed.toFixed(1) + 'px, sink ' + wetTerm + ' wet / ' + dryTerm + ' on the beach past column ' + col;
+  });
+
   /* ---------- runner ---------- */
   function loadFrame(doc, src) {
     return new Promise((resolve, reject) => {
