@@ -1714,7 +1714,18 @@
     const roomExitUnder = A.win.eval('roomExitUnder');
     let trips = 0;
     const seenRooms = new Set();
-    for (const [w, lv] of [[1, 1], [1, 2], [1, 3], [2, 3], [3, 1], [4, 3]]) {
+    /* Find courses that HAVE an entrance rather than naming them. Which courses carry a
+       bonus pipe is a property of the rotation and of which courses are composed, and a
+       hard-coded list went stale the moment either changed -- the same way naming 3-3 as
+       the lagoon did. */
+    const withEntries = [];
+    for (let w = 1; w <= 12 && withEntries.length < 6; w++) {
+      for (let lv = 1; lv <= 3 && withEntries.length < 6; lv++) {
+        if ((A.win.eval('buildLevel')(lv, w).entries || []).length) withEntries.push([w, lv]);
+      }
+    }
+    if (withEntries.length < 4) fail('only ' + withEntries.length + ' courses with a bonus pipe were found');
+    for (const [w, lv] of withEntries) {
       const L = A.course(w, lv, 0);
       for (const entry of (L.entries || [])) {
         const courseLevel = G.level;

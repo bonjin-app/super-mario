@@ -2023,7 +2023,122 @@ function buildLevel(lv, world = 1) {
   const CHP = (x, ph) => enemies.push({ type:'chomp', x: x*TILE + 2, y: (13-ph)*TILE, w:12, h:16,
     baseY: (13-ph)*TILE, vx:0, vy:0, t:0, phase: (x * 37) % 150 });
 
-  if (variant === 0) {
+  /* ---------- composed courses ----------
+     Eight hand-written layouts cost 370 lines, about 46 a course, and that price is the
+     reason "add more variety" kept meaning "add one more course". Every open-source
+     platformer worth reading solves this the same way and it is the idea worth taking
+     from them, not their bytes: levels are DATA assembled from pieces, not drawings made
+     in code. (Nothing here is copied from anywhere -- lifting Nintendo's level design or
+     another project's map data would be taking their work and mixing their licence in.)
+
+     A segment fills a span of columns and obeys one contract, which is what makes any
+     concatenation safe rather than merely likely to be safe:
+
+       - rows 7-12 stay CLEAR in a segment's first four and last two columns
+       - a pit or lava starts at least four columns in and ends two before the end
+       - a spike sits at least five columns in, because airClear looks at cx-5..cx+2
+
+     Those three lines are the pit-roofing rule and the spike run-up rule restated as a
+     boundary condition. Obey them per segment and no arrangement of segments can break
+     them, which is why this can be generated instead of authored.
+
+     Worlds 1-3 stay hand-made. The opening arc is the game's first impression and 1-1 is
+     a tutorial with a deliberate order to it; neither should be rolled. From world 4 the
+     courses are composed, seeded by (world, course), so a given course is identical
+     every time it is replayed and different from every other. The lagoon keeps its
+     authored variant either way -- it is a whole course type, not a corridor. */
+  const composed = world >= 4 && variant !== 4;
+  if (composed) {
+    let cseed = ((world * 374761393) ^ (lv * 668265263) ^ 0x5bf03635) % 2147483647;
+    if (cseed <= 0) cseed += 2147483646;
+    const crnd = () => (cseed = cseed * 48271 % 2147483647) / 2147483647;
+    const cpick = (arr) => arr[Math.floor(crnd() * arr.length)];
+    const pace2 = pace;
+
+    /* Each segment returns the width it used. `lo` is how far in the segment promises to
+       keep its hazards, and it is the contract above expressed as code. */
+    const sFlat = (x, len) => { if (crnd() < 0.5) coinRow(x + 2, x + Math.min(len - 2, 6), 12); return len; };
+    const sWalkers = (x) => { const n = 1 + Math.floor(crnd() * 3); for (let i = 0; i < n; i++) P(x + 4 + i * 2); return 10; };
+    const sShell = (x) => { S(x + 5); if (crnd() < 0.5) P(x + 8); return 12; };
+    const sPitNarrow = (x) => { gap(x + 5, x + 6); coinArc(x + 5, 9, 3); return 12; };
+    const sPitWide = (x) => { gap(x + 6, x + 8); coinArc(x + 7, 9, 4); return 15; };
+    const sBlocks = (x) => {
+      const c = cpick(['?', 'M', 'F']);
+      blk(x + 5, 9, 'B'); blk(x + 6, 9, c); blk(x + 7, 9, 'B');
+      coinRow(x + 5, x + 7, 8);
+      return 13;
+    };
+    const sHighLedge = (x) => {
+      blk(x + 5, 9, 'B'); blk(x + 6, 9); blk(x + 7, 9, 'B'); blk(x + 8, 9, 'B');
+      blk(x + 6, 5, cpick(['?', 'M']));
+      coinRow(x + 5, x + 8, 8);
+      return 14;
+    };
+    const sPipe = (x) => { const h = 2 + Math.floor(crnd() * 3); pipe(x + 5, h); return 12; };
+    const sChompPipe = (x) => { const h = 3 + Math.floor(crnd() * 2); pipe(x + 5, h); CHP(x + 5, h); return 13; };
+    const sSpike = (x) => { SPK(x + 6); return 14; };
+    const sCannon = (x) => { CAN(x + 6, 10 + Math.floor(crnd() * 2)); return 13; };
+    const sGlider = (x) => { GLD(x + 6, 6 + Math.floor(crnd() * 2), 18 + Math.floor(crnd() * 8)); return 11; };
+    const sFlappy = (x) => { FLP(x + 5); if (crnd() < 0.4) FLP(x + 9); return 13; };
+    const sTerrace = (x) => {
+      const len = 12, top = 11;
+      for (let i = 4; i < len - 2; i++) for (let y = top; y <= 12; y++) set(x + i, y, 'X');
+      coinRow(x + 5, x + len - 4, top - 1);
+      if (crnd() < 0.5) P(x + 6);
+      return len;
+    };
+    const sLift = (x) => { plat(x + 4, 8, crnd() < 0.5 ? 'h' : 'v', crnd() < 0.5 ? 5 : -4); coinRow(x + 6, x + 10, 5); return 14; };
+    const sCoinArc = (x) => { coinArc(x + 6, 9, 3); return 12; };
+
+    /* Weighted so a course is mostly ground and enemies with hazards punctuating it,
+       rather than an obstacle course. Hazards and spikes are held back until the second
+       half of the pool so the front of a course stays readable. */
+    const PIECES = [
+      sWalkers, sWalkers, sShell, sBlocks, sHighLedge, sPipe, sChompPipe,
+      sPitNarrow, sPitWide, sSpike, sCannon, sGlider, sFlappy, sTerrace, sLift, sCoinArc
+    ];
+
+    let x = 3, slot = 0;
+    x += sFlat(x, 14);                       // a plain start, always
+    while (x < 168) {
+      /* The checkpoint search walks outward from column 99 and needs four columns with
+         ground under them and open sky above, and no walker within three tiles. Composed
+         courses would otherwise be free to fill that band with terrain, so it is reserved
+         and left completely plain. */
+      if (x >= 90 && x < 116) { x += sFlat(x, 8); continue; }
+      /* Two slots are reserved for pipes, because the bonus route is built out of them
+         and rolling for it does not work: measured, 16 composed courses produced 0
+         entrances and five of them held no pipe at all, so the rooms would have
+         disappeared from world 4 onward. Every course gets a detour, the way the
+         original gives one per course. */
+      const piece = (slot === 2 || slot === 8) ? sPipe
+                  : PIECES[Math.floor(crnd() * PIECES.length)];
+      x += piece(x);
+      slot++;
+    }
+    while (x < 178) x += sFlat(x, 6);        // a flat run-up to the stairs
+
+    /* Turn the first pipe into the enterable one and send it to the second. Doing this
+       after the fact rather than inside a segment is what keeps the segments independent:
+       a segment cannot know whether anything comes after it, and an entrance whose exit
+       does not exist is the bug this file already fixed once. The audit pass further down
+       re-checks the exit and snaps it if it has to, so this has a second line of
+       defence. */
+    const tops = [];
+    for (let cx = 1; cx < W - 8; cx++) {
+      for (let cy = 0; cy < H; cy++) {
+        if (map[cy][cx] !== 'T') continue;
+        if (tops.length && cx - tops[tops.length - 1].x <= 1) break;   // the pair's right half
+        tops.push({ x: cx, y: cy });
+        break;
+      }
+    }
+    if (tops.length >= 2) {
+      const a = tops[0], b = tops[1];
+      set(a.x, a.y, 'E'); set(a.x + 1, a.y, 'E');
+      entries.push({ tx: a.x, ty: a.y, exitTx: b.x, room: Math.floor(crnd() * 3) });
+    }
+  } else if (variant === 0) {
     gap(69,70); gap(86,88); gap(153,155);
     /* ---------- the opening is the tutorial ----------
        This course is the first thing anybody plays, and it used to teach nothing: the
