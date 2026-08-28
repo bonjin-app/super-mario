@@ -2931,9 +2931,38 @@ function buildFortress(world) {
      reached the deck's height), and the pool is too narrow to read as a hazard. Wider
      pools with a 2-tile deck give an 8-16px hop on each side -- inside the 29px a
      standing jump reaches -- and look like something worth being careful about. */
-  poolAt(20, 3); poolAt(34, 4); poolAt(52, 3);
-  if (lap >= 2) poolAt(66, 4);
-  if (lap >= 4) poolAt(78, 3);
+  /* ---------- three arrangements, rotating on the world ----------
+     A fortress is one course in four, and it used to be ONE hand-placed layout with
+     density knobs on it. Measured across ten worlds: three distinct fortresses, seven
+     of the ten consecutive pairs byte-identical, and from world 8 onward frozen for
+     good, because everything that varied was gated on `lap` and lap caps at 7. The
+     seeded RNG in here only ever picked a fire bar's spin direction, so the map itself
+     never moved -- the lava columns were identical between worlds 1 and 2.
+     So the positions become a rotation, the same way the field layouts did. What stays
+     fixed is the climax: the bridge, the axe and the boss are this course's signature
+     and every world should end the same way.
+     The one rule these have to respect by hand is the hazard airspace -- rows 7-12 must
+     be clear over every pool's takeoff, from three tiles before it to one after -- since
+     buildFortress does not run buildLevel's block-relocation pass. Shelves and bar
+     pivots both sit at row 9, so both have to dodge those windows. The structure check
+     over 48 courses is what proves each arrangement got it right. */
+  const ARRANGEMENTS = [
+    { pools: [[20, 3], [34, 4], [52, 3]], late: [[66, 4], [78, 3]],
+      shelves: [14, 28, 45, 58, 88], flower: 45,
+      bars: [40, 58, 72, 84, 94], patrols: [26, 44, 62, 82, 96] },
+    // front-loaded: the pools come early and close, then a long corridor of bars
+    { pools: [[18, 3], [32, 4], [48, 3]], late: [[62, 4], [76, 3]],
+      shelves: [10, 24, 40, 54, 84], flower: 40,
+      bars: [26, 40, 56, 70, 88], patrols: [14, 28, 44, 58, 84] },
+    // back-loaded: a walk in, then the hazards crowd together before the bridge
+    { pools: [[24, 4], [44, 3], [58, 4]], late: [[72, 3], [86, 4]],
+      shelves: [12, 32, 50, 64, 78], flower: 32,
+      bars: [16, 36, 52, 66, 80], patrols: [18, 34, 50, 66, 80] }
+  ];
+  const A = ARRANGEMENTS[(world - 1) % ARRANGEMENTS.length];
+  for (const [x, pw] of A.pools) poolAt(x, pw);
+  if (lap >= 2) poolAt(A.late[0][0], A.late[0][1]);
+  if (lap >= 4) poolAt(A.late[1][0], A.late[1][1]);
 
   /* Reward shelves at row 9 only. The first cut also put block pairs at row 5, and
      they were pure trap: a big hero standing on a row-9 shelf and jumping bonks a row-5
@@ -2942,8 +2971,8 @@ function buildFortress(world) {
      decoration in a fortress anyway; the vertical interest here comes from the pillars
      and the bars. The shelves themselves also keep six tiles clear of every pool, so a
      hop off the end of one cannot carry into lava. */
-  for (const x of [14, 28, 45, 58, 88]) { set(x, 9, 'B'); set(x + 1, 9, '?'); set(x + 2, 9, 'B'); }
-  set(45, 5, 'F');                                          // one flower, the fortress answer
+  for (const x of A.shelves) { set(x, 9, 'B'); set(x + 1, 9, '?'); set(x + 2, 9, 'B'); }
+  set(A.flower, 5, 'F');            // one flower, the fortress answer, four rows over a shelf
 
   /* Fire bars: a chain of links pivoting on a block. Placed on the corridor between
      the last pool and the bridge, never over lava -- a hazard you cannot retreat from
@@ -2965,7 +2994,7 @@ function buildFortress(world) {
       power: 7.4 + lap * 0.1, up: false
     });
   });
-  for (const x of [26, 44, 62, 82, 96]) {
+  for (const x of A.patrols) {
     if (map[13][x] !== 'X' || map[12][x] !== ' ') continue;
     enemies.push({ type: 'shelly', x: x * TILE, y: 13 * TILE - 16, w: 12, h: 16,
                    vx: -0.4 * (1 + lap * 0.06), vy: 0, t: 0 });
@@ -2986,7 +3015,7 @@ function buildFortress(world) {
 
   const bars = [];
   const barCount = 2 + Math.floor(lap / 2);
-  const barSpots = [40, 58, 72, 84, 94].slice(0, barCount);
+  const barSpots = A.bars.slice(0, barCount);
   for (const bx of barSpots) {
     set(bx, 9, 'U');                                        // the pivot block
     bars.push({ x: bx * TILE + 8, y: 9 * TILE + 8, len: 4 + (lap >= 3 ? 1 : 0),
