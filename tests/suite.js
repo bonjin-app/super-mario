@@ -1386,9 +1386,24 @@
     if (!e) fail('a ' + type + ' was expected in ' + where.w + '-' + where.lv + ' and is not there');
     G.level.enemies.length = 0;
     G.level.enemies.push(e);
-    G.camera = Math.max(0, e.x - 120);
+    /* Strip the coins. These checks measure what happens to an ENEMY and what that is
+       worth, and a coin is worth 200 too -- so one picked up in passing reads as a stomp
+       worth 400. It bit twice: once when a hero parked beside an enemy stood on one, and
+       again when new content put a coin row where the hero ends up. Removing them makes
+       the whole class of contamination impossible rather than avoidable. */
+    for (let y = 0; y < G.level.H; y++) {
+      for (let x = 0; x < G.level.W; x++) if (G.level.map[y][x] === 'c') G.level.map[y][x] = ' ';
+    }
+    /* WAKE_AHEAD is 336px, so the camera can sit a long way left of the enemy and it
+       still wakes -- which buys the hero somewhere to stand that is nowhere near the
+       ball. 300 keeps a margin. */
+    G.camera = Math.max(0, e.x - 300);
     const m = G.mario;
-    m.x = 3 * A.T; m.y = 12 * A.T; m.px = m.x; m.py = m.y; m.vx = 0; m.vy = 0;
+    /* Park the hero at the camera's left edge, not at column 3: the engine clamps the
+       hero to that edge, so parking it further back does not keep it there -- it slid
+       forward on the next step, which is how it once reached a coin row seven tiles
+       away and turned a 200-point stomp into 400. */
+    m.x = G.camera + 8; m.y = 12 * A.T; m.px = m.x; m.py = m.y; m.vx = 0; m.vy = 0;
     m.big = true; m.fire = true; m.h = 30; m.star = 0; m.dead = false;
     m.invuln = 9999;                       // parked and untouchable while we set up
     return e;
@@ -1423,6 +1438,9 @@
       G.balls.push({ x: e.x + 2, y: e.y + 2, w: 8, h: 8, vx: 0, vy: 0, t: 0, px: e.x + 2, py: e.y + 2 });
       A.run(2);
       const gained = G.score - s0;
+      /* lava kills regardless of invulnerability, so a hero parked over a pool would
+         die and take the rest of this case with it. Say that plainly if it happens. */
+      if (G.mario.dead) fail(type + ': the setup parked the hero somewhere fatal, so this case never ran');
       if (!!e.flat !== want.flat) fail(type + ': flat=' + !!e.flat + ', expected ' + want.flat);
       if (e.type !== want.becomes) fail(type + ' became "' + e.type + '", expected "' + want.becomes + '"');
       if (gained !== want.score) fail(type + ' scored ' + gained + ', expected ' + want.score);
