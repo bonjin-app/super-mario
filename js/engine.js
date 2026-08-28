@@ -3080,6 +3080,19 @@ function roomShell(W, H) {
 function roomFor(entry, world) {
   const H = 15;
   const which = ((entry && entry.room) | 0) % 3;
+  /* Rooms took `world` and never used it: measured across twelve worlds, three distinct
+     room maps total and one variant per type, so the same pipe always opened the exact
+     same gallery forever. The fortress had the same problem and got a rotation of
+     arrangements; a room cannot, because its shape is load-bearing in a way a corridor's
+     is not -- every comment below is a trap that was found and closed by hand (a step
+     the small hero walks under, a crawlway you grow inside, a block three rows up that
+     the big hero cannot jump into). Changing the shape would put those back on the
+     table.
+     So the variation is strictly ADDITIVE and lands only where the geometry already
+     proved safe: more coins in space that is already open, and at higher laps one more
+     reward block, each placed four rows over an existing surface and clear of the two
+     rows above the exit lip. */
+  const lap = Math.min(((world | 0) || 1) - 1, 7);
   let W, map, exitTx, exitTy, exitBase = 13;
   const set = (x, y, c) => { if (x >= 0 && x < W && y >= 0 && y < H) map[y][x] = c; };
   const coins = (x0, x1, y) => { for (let x = x0; x <= x1; x++) if (map[y][x] === ' ') set(x, y, 'c'); };
@@ -3113,6 +3126,9 @@ function roomFor(entry, world) {
     coins(7, 10, 4);                       // and a high row, taken in flight from the top
     set(2, 9, '?');                        // four rows over the floor
     set(5, 6, 'M');                        // four rows over the second step
+    if (lap >= 2) { coins(1, 2, 9); coins(1, 2, 10); }   // the shaft wall, already open
+    // four rows over the third step, and clear of the two rows above the exit lip
+    if (lap >= 4) set(9, 4, '?');
   } else if (which === 2) {
     /* ---------- TUNNEL ----------
        A stone mass with a two-tile crawlway under it. The big hero clears a 32px opening
@@ -3131,6 +3147,12 @@ function roomFor(entry, world) {
        lip: the big hero came out of the crawl and was sealed into the chamber. */
     set(20, 9, '?'); set(24, 9, 'M');
     coins(22, 23, 8); coins(20, 24, 6);    // taken in flight, not from a standstill
+    if (lap >= 2) coins(19, 24, 7);        // the chamber, between the two flight rows
+    /* Column 21, not 22: the exit stands at 22 and the two rows over its lip are wiped
+       unconditionally at the end, so a block there would simply be deleted. And never in
+       the tunnel -- growing inside a 32px crawlway is how you build a room nobody can
+       leave. */
+    if (lap >= 4) set(21, 9, '?');
   } else {
     /* ---------- VAULT ----------
        Two galleries with a brick shelf under each. The high coin row is out of reach
@@ -3144,6 +3166,9 @@ function roomFor(entry, world) {
     for (const y of [5, 8]) { coins(3, 8, y); coins(12, 16, y); }
     shelf(4, 7, 10); shelf(12, 15, 10);
     set(9, 9, 'M'); set(10, 9, '?');
+    // reachable off either shelf: a 75px jump from row 10 tops out around row 5
+    if (lap >= 2) { coins(4, 7, 6); coins(12, 15, 6); }
+    if (lap >= 4) set(11, 9, '?');         // the same aisle, four rows over the floor
   }
 
   set(exitTx, exitTy, 'E'); set(exitTx + 1, exitTy, 'E');
