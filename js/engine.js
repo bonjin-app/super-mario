@@ -3362,6 +3362,7 @@ const GAME = {
   scores: [], scoreAt: -1,
   flagSlide: false, walkDone: false, clearTimer: 0,
   readyTimer: 0, combo: 0, paused: false,
+  fireworks: 0, courseCoinTotal: 0, courseCoinsGot: 0,
   charIdx: 0, bgmOn: true, shake: 0,
   balls: [], high: 0, theme: 0, fade: 0, fadeDir: 0,
   camPrev: 0, alpha: 1,
@@ -3518,6 +3519,14 @@ function startLevel(keepCheckpoint) {
   GAME.balls = [];
   GAME.fade = 1; GAME.fadeDir = -1; // fade up from black into the new course
   GAME.time = GAME.level.timeLimit; GAME.timeF = 0; GAME.combo = 0;
+  GAME.fireworks = 0;
+  /* Loose 'c' cells only. Block coins are not counted because a course's total would
+     then depend on which blocks the player chose to punch, and a goal you cannot see
+     the size of is not a goal. */
+  GAME.courseCoinTotal = 0; GAME.courseCoinsGot = 0;
+  for (let y = 0; y < GAME.level.H; y++) {
+    for (let x = 0; x < GAME.level.W; x++) if (GAME.level.map[y][x] === 'c') GAME.courseCoinTotal++;
+  }
   resetMario();
   // camera derived from the spawn instead of pinned to 0, which would have shown
   // the course start for a frame before snapping to a checkpoint respawn
@@ -3779,6 +3788,7 @@ function collectCoins(m) {
       if (tx < 0 || tx >= L.W) continue;
       if (L.map[ty][tx] !== 'c') continue;
       L.map[ty][tx] = ' ';
+      GAME.courseCoinsGot++;
       takeCoin(tx, ty);
       GAME.items.push({ type:'coinAnim', x: tx*TILE + 2, y: ty*TILE - 4, t: 0 });
       for (let i = 0; i < 3; i++) GAME.particles.push({
@@ -4631,10 +4641,29 @@ function updateMario() {
   const L = GAME.level;
   if (!GAME.flagSlide && !GAME.walkDone && m.x + m.w > L.flagX * TILE - 4) {
     GAME.flagSlide = true;
+    /* Five tiers, not four: the original pays 100/400/800/2000/5000 by grab height and
+       the 400 band was missing here, so the whole middle of the pole scored the same as
+       the bottom. Grabbing high is the one skill expression a course ending has. */
     const y = m.y;
     let pts = 100;
-    if (y < 6*TILE) pts = 5000; else if (y < 8*TILE) pts = 2000; else if (y < 10*TILE) pts = 800;
+    if (y < 6*TILE) pts = 5000;
+    else if (y < 8*TILE) pts = 2000;
+    else if (y < 10*TILE) pts = 800;
+    else if (y < 11*TILE) pts = 400;
     addScore(pts, m);
+    /* Fireworks, read off the clock NOW, before the time bonus drains it. The original
+       fires one per unit when the last digit is 1, 3 or 6, at 500 each -- a secret that
+       rewards arriving at the right moment rather than merely arriving. */
+    const digit = GAME.time % 10;
+    GAME.fireworks = (digit === 1 || digit === 3 || digit === 6) ? digit : 0;
+    /* And the completionist's reward: every loose coin in the course. Counted from the
+       map at build time, so the goal is fixed and reachable rather than a moving target
+       that block coins could inflate. */
+    if (GAME.courseCoinTotal > 0 && GAME.courseCoinsGot >= GAME.courseCoinTotal) {
+      GAME.lives++;
+      Sound.oneUp();
+      GAME.popups.push({ x: m.x, y: m.y - 22, text: 'ALL COINS 1UP', t: 0 });
+    }
     Sound.flag();
     m.x = L.flagX * TILE + 10; m.vx = 0; m.vy = 0; m.facing = 1;
     snapMario();
@@ -4723,6 +4752,22 @@ function updateClear() {
       const step = Math.min(GAME.time, 3);
       GAME.time -= step; GAME.score += step * 50;
       if (GAME.clearTimer % 2 === 0) Sound.tone(1319, 0.05, 'square', 0.07);
+    } else if (GAME.fireworks > 0) {
+      // one every 20 steps, so they read as a sequence rather than a single flash
+      if (GAME.clearTimer % 20 === 0) {
+        GAME.fireworks--;
+        GAME.score += 500;
+        const fx = (L.castleX - 3) * TILE + Math.random() * 5 * TILE;
+        const fy = 3 * TILE + Math.random() * 3 * TILE;
+        for (let i = 0; i < 14; i++) {
+          const a = (i / 14) * Math.PI * 2;
+          GAME.particles.push({ kind: 'spark', x: fx, y: fy,
+            vx: Math.cos(a) * (1.4 + Math.random() * 0.8),
+            vy: Math.sin(a) * (1.4 + Math.random() * 0.8), t: 0 });
+        }
+        GAME.popups.push({ x: fx - 8, y: fy, text: '500', t: 0 });
+        Sound.noise(0.22, 0.09, 0, 900, 180);
+      }
     } else if (GAME.clearTimer > (GAME.worldDone ? 260 : 120)) nextLevel();
   }
 }
