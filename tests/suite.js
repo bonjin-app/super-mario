@@ -261,7 +261,11 @@
   test('geometry', 'forgiveness window holds its documented baseline', (A) => {
     let pairs = 0, sum = 0, traps = 0, pits = 0, courses = 0;
     const trapList = [];
-    for (let w = 1; w <= 5; w++) for (let lv = 1; lv <= 3; lv++) {
+    /* Worlds 1-7 rather than 1-5: from world 4 the courses are composed, so the sample
+       has to reach far enough in to measure generated pits as well as authored ones.
+       Widening the sample is the right way to keep this honest -- the alternative was
+       lowering the pair floor, which would have measured less and asserted less. */
+    for (let w = 1; w <= 7; w++) for (let lv = 1; lv <= 3; lv++) {
       A.course(w, lv, 0);
       if (A.G.level.water || A.G.level.fortress) continue;
       courses++;
@@ -1103,7 +1107,12 @@
     /* Coverage floors, so this cannot pass by finding nothing to inspect -- a build
        change that emptied the enemy list would otherwise read as a clean sweep. */
     if (courses !== 48) fail('built ' + courses + ' courses, expected 48');
-    if (walkers < 1000) fail('only ' + walkers + ' ground walkers inspected; expected ~1243');
+    /* Re-based from 1000 when the courses from world 4 became composed. This floor is
+       here to catch the enemy list vanishing, not to pin a density: measured, composed
+       courses carry MORE patrols per course than the hand-made ones (29.6 against 23.8),
+       and the total moved because the mix of enemy types did. 700 still fails loudly if
+       the population pass ever stops running. */
+    if (walkers < 700) fail('only ' + walkers + ' ground walkers inspected; expected ~950');
     if (spikos < 80) fail('only ' + spikos + ' spikes inspected; expected ~108');
     if (pitCols < 300) fail('only ' + pitCols + ' pit columns found; expected ~426');
     if (lavaCols < 200) fail('only ' + lavaCols + ' lava columns found; expected ~304');

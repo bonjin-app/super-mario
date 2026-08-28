@@ -2062,14 +2062,18 @@ function buildLevel(lv, world = 1) {
     const sShell = (x) => { S(x + 5); if (crnd() < 0.5) P(x + 8); return 12; };
     const sPitNarrow = (x) => { gap(x + 5, x + 6); coinArc(x + 5, 9, 3); return 12; };
     const sPitWide = (x) => { gap(x + 6, x + 8); coinArc(x + 7, 9, 4); return 15; };
+    /* A block ROW, not a lone block: measured against the hand-made courses, composed
+       ones were carrying 3.4 reward blocks against 11.5, which is the difference between
+       a course with things in it and a corridor. */
     const sBlocks = (x) => {
-      const c = cpick(['?', 'M', 'F']);
-      blk(x + 5, 9, 'B'); blk(x + 6, 9, c); blk(x + 7, 9, 'B');
-      coinRow(x + 5, x + 7, 8);
-      return 13;
+      blk(x + 5, 9, 'B'); blk(x + 6, 9, cpick(['?', 'M'])); blk(x + 7, 9, 'B');
+      blk(x + 8, 9, '?'); blk(x + 9, 9, 'B'); blk(x + 10, 9, cpick(['?', 'F']));
+      blk(x + 11, 9, 'B');
+      coinRow(x + 5, x + 11, 8);
+      return 17;
     };
     const sHighLedge = (x) => {
-      blk(x + 5, 9, 'B'); blk(x + 6, 9); blk(x + 7, 9, 'B'); blk(x + 8, 9, 'B');
+      blk(x + 5, 9, 'B'); blk(x + 6, 9, '?'); blk(x + 7, 9, 'B'); blk(x + 8, 9, 'B');
       blk(x + 6, 5, cpick(['?', 'M']));
       coinRow(x + 5, x + 8, 8);
       return 14;
@@ -2094,8 +2098,9 @@ function buildLevel(lv, world = 1) {
        rather than an obstacle course. Hazards and spikes are held back until the second
        half of the pool so the front of a course stays readable. */
     const PIECES = [
-      sWalkers, sWalkers, sShell, sBlocks, sHighLedge, sPipe, sChompPipe,
-      sPitNarrow, sPitWide, sSpike, sCannon, sGlider, sFlappy, sTerrace, sLift, sCoinArc
+      sWalkers, sWalkers, sWalkers, sShell, sBlocks, sBlocks, sHighLedge,
+      sPipe, sChompPipe, sPitNarrow, sPitNarrow, sPitWide, sPitWide,
+      sSpike, sCannon, sGlider, sFlappy, sTerrace, sLift, sCoinArc
     ];
 
     let x = 3, slot = 0;
@@ -2111,7 +2116,20 @@ function buildLevel(lv, world = 1) {
          entrances and five of them held no pipe at all, so the rooms would have
          disappeared from world 4 onward. Every course gets a detour, the way the
          original gives one per course. */
+      /* Reserved slots. Rolling for the things a course has to HAVE does not work --
+         measured, rolling produced 0 bonus pipes in 16 courses, 1.8 pits against the
+         hand-made 2.8, and 4.5 reward blocks against 11.5. A course needs a detour,
+         somewhere to fall and something to hit, so those are placed rather than hoped
+         for, and everything else is still rolled. */
+      /* Slots 0-11, because that is how many a course fits: the body runs from column 17
+         to 168 and a segment averages thirteen wide. The first cut reserved 12, 14 and 16
+         and none of them were ever reached, which is why the reward count sat at 4.8
+         against the hand-made 11.5 -- the reservations were past the end of the course. */
       const piece = (slot === 2 || slot === 8) ? sPipe
+                  : (slot === 4 || slot === 7 || slot === 11) ? sBlocks
+                  : (slot === 6) ? sPitNarrow
+                  : (slot === 9) ? sSpike
+                  : (slot === 10) ? sPitWide
                   : PIECES[Math.floor(crnd() * PIECES.length)];
       x += piece(x);
       slot++;
@@ -2137,6 +2155,37 @@ function buildLevel(lv, world = 1) {
       const a = tops[0], b = tops[1];
       set(a.x, a.y, 'E'); set(a.x + 1, a.y, 'E');
       entries.push({ tx: a.x, ty: a.y, exitTx: b.x, room: Math.floor(crnd() * 3) });
+    }
+
+    /* Population pass. Tuning each segment's own enemy count was the wrong lever: the
+       hand-made courses do not put patrols inside features, they sprinkle them along the
+       whole course, and measured they carry 23.8 walkers against the 14.5 a
+       feature-by-feature composition produced. So walkers are laid down afterwards,
+       across the whole width, which is both closer to how the authored ones read and one
+       knob instead of sixteen.
+       A walker only has to stand on real ground -- surfaceY puts it on whatever surface
+       its column has, terrace included -- so this cannot break the terrain rules. The
+       checkpoint band is skipped because a walker within three tiles of the marker
+       disqualifies the column the respawn wants. */
+    /* `world - 1` rather than `lap`: the shared lap constant is declared after the layout
+       branches, so reading it here is a temporal dead zone -- which is to say every
+       composed course threw on build until this was caught. */
+    /* The segments carry patrols of their own and the per-world variation adds more on
+       top, so this only tops up the difference. Set to 16 it overshot to 37.6 walkers a
+       course against the hand-made 23.8, which is a crowd rather than a course. */
+    const want = 11 + Math.floor(crnd() * 4) + Math.min(world - 1, 4);
+    let placed = 0;
+    for (let attempt = 0; attempt < 400 && placed < want; attempt++) {
+      const px = 20 + Math.floor(crnd() * 150);
+      if (px >= 88 && px < 118) continue;             // the checkpoint's band
+      if (!solid(map[13][px]) && !solid(map[12][px]) && !solid(map[11][px])) continue;
+      if (!solid(map[13][px]) && !solid(map[14][px])) continue;   // never over a pit
+      if (map[12][px] !== ' ' && map[11][px] !== ' ') continue;   // needs headroom to stand in
+      const roll = crnd();
+      if (roll < 0.72) P(px);
+      else if (roll < 0.9) S(px);
+      else FLP(px);
+      placed++;
     }
   } else if (variant === 0) {
     gap(69,70); gap(86,88); gap(153,155);
